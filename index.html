@@ -1,124 +1,95 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="green">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Wasteland RPG</title>
 
   <!-- FAVICON -->
   <link rel="icon" type="image/png" href="favicon.png">
 
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div id="pipboy-frame">
-    <div id="pipboy-header">
-      <span class="header-left">WASTELAND RPG</span>
-      <span class="header-center">PIP-UNIT 3000</span>
-      <span class="header-right" id="header-time">00:00</span>
-    </div>
+    <header id="pipboy-header">
+      <div class="header-left">
+        <span class="brand">WASTELAND RPG</span>
+        <span class="header-sub">PIP-UNIT 3000</span>
+      </div>
+      <div class="header-center" id="header-location"></div>
+      <div class="header-right">
+        <button id="sound-toggle" class="icon-btn" data-action="toggleSound" title="Toggle sound">♪ ON</button>
+        <span id="header-time">00:00</span>
+      </div>
+    </header>
+
+    <div id="frenzy-banner" class="hidden"></div>
 
     <div id="pipboy-main">
-      <div id="pipboy-sidebar">
-        <button class="tab-button active" data-tab="status">STATUS</button>
-        <button class="tab-button" data-tab="map">MAP</button>
-        <button class="tab-button" data-tab="inventory">INVENTORY</button>
-        <button class="tab-button" data-tab="combat">COMBAT</button>
-        <button class="tab-button" data-tab="log">LOG</button>
-        <button class="tab-button" data-tab="allies">ALLIES</button>
-      </div>
+      <nav id="pipboy-sidebar">
+        <button class="tab-button" data-tab="status" data-action="tab" data-arg="status"><span class="key">1</span>STAT</button>
+        <button class="tab-button" data-tab="map" data-action="tab" data-arg="map"><span class="key">2</span>MAP</button>
+        <button class="tab-button" data-tab="inventory" data-action="tab" data-arg="inventory"><span class="key">3</span>INV</button>
+        <button class="tab-button" data-tab="combat" data-action="tab" data-arg="combat"><span class="key">4</span>COMBAT</button>
+        <button class="tab-button" data-tab="camp" data-action="tab" data-arg="camp"><span class="key">5</span>C.A.M.P.</button>
+        <button class="tab-button" data-tab="allies" data-action="tab" data-arg="allies"><span class="key">6</span>ALLIES</button>
+        <button class="tab-button" data-tab="log" data-action="tab" data-arg="log"><span class="key">7</span>LOG</button>
+      </nav>
 
-      <div id="pipboy-content">
-
-        <!-- STATUS TAB -->
-        <div class="tab-content" id="tab-status">
-          <h1>STATUS</h1>
-
-          <button id="recruit-button" class="hidden">RECRUIT ALLY</button>
-          <p id="recruit-message" class="message"></p>
-
-          <div class="status-grid">
-            <div>
-              <p><span class="label">Name:</span> <span id="char-name"></span></p>
-              <p><span class="label">Level:</span> <span id="char-level"></span></p>
-              <p><span class="label">HP:</span> <span id="char-hp"></span></p>
-              <p><span class="label">Location:</span> <span id="char-location"></span></p>
-            </div>
-            <div>
-              <p><span class="label">STR:</span> <span id="stat-str"></span></p>
-              <p><span class="label">PER:</span> <span id="stat-per"></span></p>
-              <p><span class="label">END:</span> <span id="stat-end"></span></p>
-              <p><span class="label">LCK:</span> <span id="stat-lck"></span></p>
-            </div>
-          </div>
-        </div>
-
-        <!-- MAP TAB -->
-        <div class="tab-content hidden" id="tab-map">
-          <h1>MAP</h1>
-
-          <label for="state-select">STATE:</label>
-          <select id="state-select"></select>
-
-          <p>Choose a location:</p>
-          <div id="location-list"></div>
-
-          <button id="travel-button">TRAVEL</button>
-          <p id="map-message" class="message"></p>
-        </div>
-
-        <!-- INVENTORY TAB -->
-        <div class="tab-content hidden" id="tab-inventory">
-          <h1>INVENTORY</h1>
-          <div id="inventory-list"></div>
-          <div class="inventory-actions">
-            <button id="use-item-button">USE</button>
-            <button id="drop-item-button">DROP</button>
-          </div>
-          <p id="inventory-message" class="message"></p>
-        </div>
-
-        <!-- COMBAT TAB -->
-        <div class="tab-content hidden" id="tab-combat">
-          <h1>COMBAT</h1>
-          <p><span class="label">Enemy:</span> <span id="enemy-name"></span></p>
-          <p><span class="label">Enemy HP:</span> <span id="enemy-hp"></span></p>
-          <div class="combat-actions">
-            <button id="attack-button">ATTACK</button>
-            <button id="loot-button" disabled>LOOT</button>
-            <button id="flee-button">FLEE</button>
-          </div>
-          <p id="combat-message" class="message"></p>
-        </div>
-
-        <!-- LOG TAB -->
-        <div class="tab-content hidden" id="tab-log">
-          <h1>LOG</h1>
-          <div id="log-output"></div>
-        </div>
-
-        <!-- ALLIES TAB -->
-        <div class="tab-content hidden" id="tab-allies">
-          <h1>ALLIES</h1>
-          <div id="allies-list"></div>
-          <p class="message" id="allies-message"></p>
-        </div>
-
-      </div>
+      <main id="pipboy-content">
+        <section class="tab-content" id="tab-status"></section>
+        <section class="tab-content hidden" id="tab-map"></section>
+        <section class="tab-content hidden" id="tab-inventory"></section>
+        <section class="tab-content hidden" id="tab-combat"></section>
+        <section class="tab-content hidden" id="tab-camp"></section>
+        <section class="tab-content hidden" id="tab-allies"></section>
+        <section class="tab-content hidden" id="tab-log"></section>
+      </main>
     </div>
 
-    <!-- UPDATED FOOTER WITH CAPS ICON -->
-    <div id="pipboy-footer">
-      <span>HP: <span id="footer-hp"></span></span>
-      <span>AP: <span id="footer-ap"></span></span>
-      <span>
-        <img src="caps_icon.png" alt="Caps" style="height: 30px; width: 30px; vertical-align:middle; margin-right:4px;">
-        <span id="footer-caps"></span>
-      </span>
-    </div>
+    <footer id="pipboy-footer">
+      <div class="hud-block" id="hud-hp">
+        <span class="hud-label">HP</span>
+        <div class="bar bar-hp hud-bar">
+          <div class="fill" id="hud-hp-fill"></div>
+          <div class="rad-fill" id="hud-rad-fill"></div>
+        </div>
+        <span class="hud-value" id="hud-hp-text"></span>
+      </div>
+      <div class="hud-block">
+        <span class="hud-label">AP</span>
+        <div class="bar bar-ap hud-bar"><div class="fill" id="hud-ap-fill"></div></div>
+        <span class="hud-value" id="hud-ap-text"></span>
+      </div>
+      <div class="hud-block">
+        <span class="hud-label">LVL <span id="hud-level"></span></span>
+        <div class="bar bar-xp hud-bar"><div class="fill" id="hud-xp-fill"></div></div>
+      </div>
+      <div class="hud-block hud-rads hidden" id="hud-rads-wrap">
+        <span class="hud-label">☢</span><span class="hud-value" id="hud-rads"></span>
+      </div>
+      <div class="hud-block hud-caps">
+        <img src="caps_icon.png" alt="Caps" class="caps-icon">
+        <span class="hud-value" id="hud-caps"></span>
+      </div>
+    </footer>
 
     <div id="scanlines"></div>
+    <div class="crt-vignette"></div>
+    <div id="toasts"></div>
+    <div id="modal" class="hidden"></div>
+
+    <div id="boot">
+      <pre id="boot-text"></pre>
+      <p id="boot-prompt" class="hidden">&gt; PRESS ANY KEY OR CLICK TO INITIALIZE<span class="cursor">_</span></p>
+    </div>
   </div>
 
+  <script src="data.js"></script>
   <script src="game.js"></script>
 </body>
 </html>
