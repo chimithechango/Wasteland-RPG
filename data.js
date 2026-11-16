@@ -106,8 +106,14 @@ const ITEMS = {
   tin_can:        { name: "Tin Can",          type: "junk", value: 1,   breakdown: { steel: 1 }, desc: "Breaks down into Steel." },
   prewar_money:   { name: "Pre-War Money",    type: "junk", value: 10,  desc: "Worthless paper. Merchants pay for it anyway." },
   bobblehead:     { name: "Vault Boy Bobblehead", type: "junk", value: 50, desc: "A collector's item. Sells well." },
-  holotape:       { name: "Pre-War Holotape", type: "junk", value: 15,  desc: "Someone's last recorded message." }
+  holotape:       { name: "Pre-War Holotape", type: "junk", value: 15,  desc: "Someone's last recorded message." },
+
+  /* ---- KEY ITEMS (can't be sold, dropped, scrapped or lost on death) ---- */
+  vault_map:      { name: "The Vault-Tec Vault Map", type: "key", rarity: "Legendary", value: 1000,
+                    desc: "A laminated Vault-Tec field map with every vault in the region circled in red. While you carry it, every vault appears on your Pip-Boy map." }
 };
+
+const VAULT_MAP_CHANCE = 0.01; // per enemy loot roll, scavenge, and Overseer's Office search
 
 /* Names from saves made before the item catalog existed */
 const LEGACY_ITEM_NAMES = {
@@ -379,6 +385,133 @@ const LOCATIONS = [
     enemies: ["raider", "radscorpion", "gunner"], vendor: ["service_rifle", "scrap", "stimpak", "ncr_ranger", "purified_water"], desc: "A fortified Republic outpost." },
   { id: "boneyard", name: "The Boneyard", region: "California", danger: "Medium", x: 35, y: 45,
     enemies: ["raider", "feral_ghoul", "protectron"], desc: "The ruins of Los Angeles." }
+];
+
+/* ---- MORE SURFACE POIs ---- */
+LOCATIONS.push(
+  /* West Virginia */
+  { id: "morgantown", name: "Morgantown Airport", region: "West Virginia", danger: "Medium", x: 80, y: 15, events: ["supply_drop", "scorched_ambush"],
+    enemies: ["scorched", "mr_gutsy", "protectron"], desc: "Responders once ran relief flights from this terminal." },
+  { id: "helvetia", name: "Helvetia", region: "West Virginia", danger: "Low", x: 40, y: 80, ally: "minuteman",
+    enemies: ["radroach", "mole_rat", "bloatfly"], vendor: ["cram", "purified_water", "stimpak", "baseball_bat", "cloth"], desc: "A little Swiss mountain village with a big taste for festivals." },
+  { id: "top_of_world", name: "Top of the World", region: "West Virginia", danger: "Low", x: 88, y: 38, nocamp: true,
+    enemies: ["bloatfly", "radroach"], vendor: ["nuka_cola", "fancy_lads", "hunting_rifle", "reinforced_leather", "radaway"], desc: "A ski resort at the summit. The chairlift still creaks." },
+  { id: "sugar_grove", name: "Sugar Grove", region: "West Virginia", danger: "High", x: 92, y: 82, events: ["sentry_patrol"],
+    enemies: ["assaultron", "mr_gutsy", "protectron"], desc: "A listening post buried in the hills, guarded by robots that never stood down." },
+
+  /* Pennsylvania */
+  { id: "uptown", name: "Pittsburgh Uptown", region: "Pennsylvania", danger: "High", x: 22, y: 25, rads: 3, events: ["feral_horde"],
+    enemies: ["feral_ghoul", "glowing_one", "raider_psycho"], desc: "Collapsed towers over choked streets." },
+  { id: "erie", name: "Erie Lakeshore", region: "Pennsylvania", danger: "Medium", x: 80, y: 15, events: ["queen_emerges"],
+    enemies: ["mirelurk", "bloatfly", "gulper"], desc: "Grey surf and the rusting hulls of lake freighters." },
+  { id: "allegheny", name: "Allegheny Woods", region: "Pennsylvania", danger: "Medium", x: 40, y: 80,
+    enemies: ["yao_guai", "wasteland_dog", "bloodbug"], desc: "Thick, quiet forest. Too quiet." },
+
+  /* Ohio */
+  { id: "columbus", name: "Columbus Ruins", region: "Ohio", danger: "High", x: 50, y: 45, events: ["mutant_raid"],
+    enemies: ["super_mutant", "gunner", "feral_ghoul"], desc: "The capital's dome is cracked open like an egg." },
+  { id: "cincinnati", name: "Cincinnati Outpost", region: "Ohio", danger: "Low", x: 25, y: 80, events: ["trader_caravan"],
+    enemies: ["radroach", "mole_rat"], vendor: ["stimpak", "pistol_10mm", "leather_armor", "brahmin_meat", "steel"], desc: "A riverboat trading post lashed to the bank." },
+
+  /* Maryland */
+  { id: "baltimore", name: "Baltimore Docks", region: "Maryland", danger: "High", x: 55, y: 20,
+    enemies: ["mirelurk", "gunner", "raider_psycho"], desc: "Container stacks, cranes, and gunfire at night." },
+  { id: "frederick", name: "Frederick Farms", region: "Maryland", danger: "Low", x: 15, y: 25, ally: "settler",
+    enemies: ["mole_rat", "bloatfly"], vendor: ["tato", "mutfruit", "brahmin_meat", "purified_water", "wood"], desc: "Brahmin pens and rows of tatos." },
+
+  /* Capital Wasteland */
+  { id: "tenpenny", name: "Tenpenny Tower", region: "Capital Wasteland", danger: "Low", x: 12, y: 55, nocamp: true,
+    enemies: ["radroach"], vendor: ["combat_armor", "laser_rifle", "super_stimpak", "mentats", "nuka_quantum"], desc: "A luxury high-rise for those who can afford to look down on everyone." },
+  { id: "paradise_falls", name: "Paradise Falls", region: "Capital Wasteland", danger: "High", x: 40, y: 15,
+    enemies: ["raider", "raider_psycho", "gunner"], desc: "A fortified slaver camp in an old shopping mall." },
+  { id: "arlington", name: "Arlington Cemetery", region: "Capital Wasteland", danger: "Medium", x: 82, y: 48, events: ["feral_horde"],
+    enemies: ["feral_ghoul", "glowing_one"], desc: "Rows of white stones and things that don't stay buried." },
+
+  /* Massachusetts */
+  { id: "lexington", name: "Lexington", region: "Massachusetts", danger: "Medium", x: 40, y: 30, events: ["feral_horde"],
+    enemies: ["feral_ghoul", "raider", "protectron"], desc: "A ghoul-infested town around a supermarket and a factory." },
+  { id: "bunker_hill", name: "Bunker Hill", region: "Massachusetts", danger: "Low", x: 65, y: 38, events: ["trader_caravan"],
+    enemies: ["radroach", "mole_rat"], vendor: ["stimpak", "radaway", "pipe_rifle", "metal_armor", "adhesive", "circuitry"], desc: "A walled trading town around the old monument." },
+  { id: "fort_hagen", name: "Fort Hagen", region: "Massachusetts", danger: "High", x: 30, y: 62, events: ["sentry_patrol"],
+    enemies: ["synth", "gunner", "assaultron"], desc: "A military base with something hiding in its command center." },
+  { id: "salem", name: "Salem", region: "Massachusetts", danger: "Medium", x: 85, y: 15, events: ["deathclaw_hunt"],
+    enemies: ["mirelurk", "feral_ghoul", "deathclaw_cub"], desc: "A seaside town with a witch museum and a very bad reputation." },
+
+  /* Nevada */
+  { id: "nipton", name: "Nipton", region: "Nevada", danger: "Medium", x: 38, y: 94,
+    enemies: ["legionary", "radroach"], desc: "Smoke rises from the town hall. A message was sent here." },
+  { id: "jacobstown", name: "Jacobstown", region: "Nevada", danger: "Low", x: 30, y: 20, nocamp: true,
+    enemies: ["nightstalker"], vendor: ["super_stimpak", "radaway", "buffout", "super_sledge"], desc: "A mountain lodge where peaceful super mutants live." },
+  { id: "nellis", name: "Nellis Air Force Base", region: "Nevada", danger: "Medium", x: 75, y: 15,
+    enemies: ["raider", "nightstalker"], desc: "Artillery fire warns visitors away from the hangars." },
+  { id: "mccarran", name: "Camp McCarran", region: "Nevada", danger: "Low", x: 66, y: 33, nocamp: true, ally: "ncr_trooper", events: ["ncr_patrol"],
+    enemies: ["radroach"], vendor: ["service_rifle", "stimpak", "ncr_ranger", "med_x"], desc: "The NCR's headquarters in an old airport terminal." },
+
+  /* California */
+  { id: "adytum", name: "Adytum", region: "California", danger: "Low", x: 25, y: 35,
+    enemies: ["radroach", "mole_rat"], vendor: ["stimpak", "hunting_rifle", "leather_armor", "cram"], desc: "A walled community in the old city." },
+  { id: "junktown", name: "Junktown", region: "California", danger: "Low", x: 85, y: 40, ally: "settler",
+    enemies: ["radroach", "wasteland_dog"], vendor: ["pipe_pistol", "stimpak", "iguana_stick", "scrap", "duct_tape"], desc: "A walled town built from car wrecks." },
+  { id: "the_glow", name: "The Glow", region: "California", danger: "High", x: 88, y: 75, rads: 8, events: ["radstorm"],
+    enemies: ["glowing_one", "feral_ghoul", "radscorpion"], desc: "A crater over a dead research facility. Bring RadAway." },
+  { id: "mariposa", name: "Mariposa Military Base", region: "California", danger: "High", x: 60, y: 15, events: ["mutant_raid"],
+    enemies: ["super_mutant", "enclave_soldier"], desc: "Where the vats once bubbled." }
+);
+
+/* ---- VAULTS ----
+   Hidden until discovered (or revealed by the Vault-Tec Vault Map).
+   Vaults are shelters: no hostiles, events or radiation inside. */
+const VAULT_DEFAULTS = { vault: true, danger: "Low", nocamp: true, enemies: [] };
+
+/* Vaults that already existed as POIs keep their vendors/allies */
+["vault_76", "vault_101", "vault_111", "vault_33", "vault_4", "vault_19"].forEach((id) => {
+  const loc = LOCATIONS.find((l) => l.id === id);
+  if (loc) Object.assign(loc, { vault: true, nocamp: true });
+});
+
+LOCATIONS.push(...[
+  { id: "vault_94",  name: "Vault 94",  region: "West Virginia", x: 32, y: 38, desc: "A peaceful vault built around a garden. The door was sealed from the inside." },
+  { id: "vault_96",  name: "Vault 96",  region: "West Virginia", x: 52, y: 62, desc: "Cryo-storage for animal specimens. Most pods are cracked." },
+  { id: "vault_51",  name: "Vault 51",  region: "West Virginia", x: 75, y: 32, desc: "A vault run by a scheming computer that wanted one dweller left standing." },
+  { id: "vault_79",  name: "Vault 79",  region: "West Virginia", x: 8,  y: 70, desc: "Rumored to hold a fortune in gold. The vault itself says nothing." },
+  { id: "vault_58",  name: "Vault 58",  region: "Pennsylvania",  x: 15, y: 70, desc: "Its steel-mill workshops never stopped running." },
+  { id: "vault_46",  name: "Vault 46",  region: "Pennsylvania",  x: 85, y: 75, desc: "A quiet vault whose dwellers left in a hurry." },
+  { id: "vault_64",  name: "Vault 64",  region: "Ohio",          x: 80, y: 75, desc: "Pastel corridors and a cafeteria full of untouched trays." },
+  { id: "vault_53",  name: "Vault 53",  region: "Maryland",      x: 45, y: 85, desc: "Everything here was designed to break down. Constantly." },
+  { id: "vault_87",  name: "Vault 87",  region: "Capital Wasteland", x: 88, y: 18, desc: "An irradiated research vault. Something big was grown here." },
+  { id: "vault_92",  name: "Vault 92",  region: "Capital Wasteland", x: 15, y: 15, desc: "A vault for musicians. Static still plays through the speakers." },
+  { id: "vault_106", name: "Vault 106", region: "Capital Wasteland", x: 20, y: 80, desc: "The air vents carry a faint, sweet smell. Don't breathe too deep." },
+  { id: "vault_112", name: "Vault 112", region: "Capital Wasteland", x: 60, y: 88, desc: "Rows of virtual-reality pods. Their occupants are long gone." },
+  { id: "vault_81",  name: "Vault 81",  region: "Massachusetts", x: 48, y: 68, desc: "Still inhabited. They're wary of outsiders but polite about it." },
+  { id: "vault_75",  name: "Vault 75",  region: "Massachusetts", x: 88, y: 65, desc: "A 'school' under a high school. The graduation exams were brutal." },
+  { id: "vault_95",  name: "Vault 95",  region: "Massachusetts", x: 15, y: 72, desc: "A rehab vault. Someone left a crate of chems by the door." },
+  { id: "vault_114", name: "Vault 114", region: "Massachusetts", x: 54, y: 34, desc: "Built for the wealthy, with deliberately terrible accommodations." },
+  { id: "vault_3",   name: "Vault 3",   region: "Nevada",        x: 75, y: 80, desc: "Once a model vault until raiders found the door code." },
+  { id: "vault_11",  name: "Vault 11",  region: "Nevada",        x: 15, y: 40, desc: "Its dwellers were told to make a terrible choice every year." },
+  { id: "vault_21",  name: "Vault 21",  region: "Nevada",        x: 42, y: 24, desc: "A gambler's vault. Disputes were settled with blackjack." },
+  { id: "vault_22",  name: "Vault 22",  region: "Nevada",        x: 88, y: 25, desc: "An agricultural vault overgrown with very aggressive plants." },
+  { id: "vault_34",  name: "Vault 34",  region: "Nevada",        x: 40, y: 40, desc: "A well-stocked armory and a leaking reactor. Guess which one won." },
+  { id: "vault_12",  name: "Vault 12",  region: "California",    x: 42, y: 22, desc: "Its door never fully closed. The radiation came in." },
+  { id: "vault_13",  name: "Vault 13",  region: "California",    x: 90, y: 12, desc: "A legendary vault. Its water chip broke a long time ago." },
+  { id: "vault_15",  name: "Vault 15",  region: "California",    x: 15, y: 88, desc: "A diverse vault whose dwellers founded more than one town." },
+  { id: "vault_32",  name: "Vault 32",  region: "California",    x: 38, y: 88, desc: "Sister vault to 33. The halls are silent." }
+].map((v) => ({ ...VAULT_DEFAULTS, ...v })));
+
+/* Lootable rooms inside every vault. They restock over time. */
+const VAULT_RESTOCK_MS = 30 * 60 * 1000;
+const VAULT_DISCOVERY_BASE = 0.1;  // chance per surface trip (+1% per LCK above 5)
+const VAULT_DISCOVERY_XP = 50;
+const VAULT_ROOMS = [
+  { id: "storage",  name: "Storage Lockers",   icon: "▤", rolls: [2, 4], desc: "Food, drink and household junk.",
+    table: [["cram", 12], ["sugar_bombs", 10], ["fancy_lads", 8], ["purified_water", 12], ["nuka_cola", 8], ["scrap", 14], ["cloth", 10], ["duct_tape", 8], ["tin_can", 8], ["teddy_bear", 4], ["wood", 8]] },
+  { id: "medical",  name: "Medical Bay",       icon: "✚", rolls: [1, 3], desc: "Stimpaks, RadAway and chems.",
+    table: [["stimpak", 30], ["super_stimpak", 8], ["radaway", 20], ["rad_x", 14], ["med_x", 10], ["mentats", 8], ["bloodleaf", 10]] },
+  { id: "armory",   name: "Security Armory",   icon: "⌖", rolls: [1, 2], desc: "Weapons and armor from vault security.",
+    table: [["pistol_10mm", 18], ["vault_suit", 14], ["combat_shotgun", 8], ["laser_pistol", 8], ["hunting_rifle", 10], ["metal_armor", 10], ["combat_armor", 6], ["laser_rifle", 5], ["plasma_rifle", 2], ["stimpak", 12]] },
+  { id: "reactor",  name: "Reactor Level",     icon: "☢", rolls: [2, 3], desc: "Power components and rare materials.",
+    table: [["circuitry", 25], ["steel", 25], ["nuclear", 15], ["adhesive", 15], ["desk_fan", 10], ["fusion_core", 5]] },
+  { id: "overseer", name: "Overseer's Office", icon: "★", rolls: [1, 2], caps: [20, 60], desc: "Caps, records and the overseer's private stash.",
+    table: [["holotape", 25], ["prewar_money", 25], ["mentats", 15], ["bobblehead", 8], ["nuka_quantum", 7], ["super_stimpak", 10]] }
 ];
 
 /* Default scavenge tables by danger */

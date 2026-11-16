@@ -37,7 +37,8 @@ const THEMES = ["green", "amber", "blue", "white"];
 const POWER_PRIORITY = ["turret", "water", "extractor", "nukaMachine", "beacon"];
 const EXTRACTOR_TABLE = [["scrap", 30], ["steel", 25], ["wood", 10], ["adhesive", 15], ["circuitry", 15], ["nuclear", 5]];
 const RESIDENT_TABLE = [["scrap", 30], ["wood", 25], ["cloth", 20], ["steel", 15], ["bloodleaf", 10]];
-const TYPE_ORDER = { weapon: 0, armor: 1, consumable: 2, junk: 3 };
+const TYPE_ORDER = { key: -1, weapon: 0, armor: 1, consumable: 2, junk: 3 };
+const MAP_ZOOMS = [1, 1.5, 2, 3];
 
 /* ---------------------------
    UTILITIES
@@ -301,10 +302,12 @@ function createBaseState() {
     local: null,
     events: { capsFrenzyActive: false, capsFrenzyTimer: 0 },
     camp: { deployed: false, locationId: null, structures: {}, stash: [], wanderer: null, lastTick: Date.now(), lastProduction: [], lostLast: 0 },
+    vaults: {},   // vaultId -> { discoveredAt, rooms: { roomId: lastLootedAt } }
+    visited: {},  // locationId -> true
     log: [],
     feed: [],
     settings: { muted: false, theme: "green" },
-    ui: { tab: "status", mapRegion: "West Virginia", mapSelected: "vault", invFilter: "all", selectedUid: null, campView: "overview" }
+    ui: { tab: "status", mapRegion: "West Virginia", mapSelected: "vault", mapZoom: 1, invFilter: "all", selectedUid: null, campView: "overview" }
   };
 }
 
@@ -318,13 +321,152 @@ function newGame() {
   state.player.hp = effMaxHp();
   state.player.ap = maxAp();
   state.local = rollLocal(LOC.vault);
+  state.visited.vault = true;
   log("Welcome to Wasteland RPG — the wastes grow larger every day.", "event");
   log("Tip: deploy your C.A.M.P. to build, store items and house allies.", "info");
+  log("Tip: hidden vaults dot the wasteland. Explore and you might stumble onto one.", "info");
 }
 
 const P = () => state.player;
 const currentLoc = () => LOC[state.player.locationId] || LOC.vault;
 const enemyActive = () => !!(state.enemy && !state.enemy.defeated);
+
+/* ---------------------------
+   VAULTS
+--------------------------- */
+const isVaultFound = (id) => !!state.vaults[id];
+const hasVaultMap = () => countItem(P().inventory, "vault_map") + countItem(state.camp.stash, "vault_map") > 0;
+const inVault = () => !!currentLoc().vault;
+/* Can this location be seen on the map / traveled to? */
+const isKnown = (loc) => !loc.vault || isVaultFound(loc.id) || hasVaultMap() || loc.id === P().locationId;
+const hiddenVaultsIn = (region) => LOCATIONS.filter((l) => l.vault && l.region === region && !isVaultFound(l.id));
+const vaultDiscoveryChance = () => clamp(VAULT_DISCOVERY_BASE + (stat("lck") - 5) * 0.01, 0.03, 0.25);
+
+function roomReadyAt(vaultId, roomId) {
+  const v = state.vaults[vaultId];
+  const t = v && v.rooms && v.rooms[roomId];
+  return t ? t + VAULT_RESTOCK_MS : 0;
+}
+
+function discoverVault(loc) {
+  if (isVaultFound(loc.id)) return false;
+  state.vaults[loc.id] = { discoveredAt: Date.now(), rooms: {} };
+  log(`VAULT DISCOVERED: ${loc.name} (${loc.region}). It's permanently marked on your map.`, "event");
+  addXP(VAULT_DISCOVERY_XP);
+  Sound.play("levelup");
+  return true;
+}
+
+const VAULT_DOOR_ART = [
+  "    _.------._",
+  "  .'  .----.  '.",
+  " /   / .--. \\   \\",
+  "|   | ( () ) |   |",
+  " \\   \\ '--' /   /",
+  "  '._ '----' _.'",
+  "     '------'"
+].join("\n");
+
+function showVaultDiscovered(vault, intended) {
+  showModal({
+    title: "VAULT DISCOVERED",
+    body: `<pre class="ascii center vault-door">${esc(VAULT_DOOR_ART)}</pre>
+      <p class="center"><strong class="big">${esc(vault.name)}</strong></p>
+      ${intended ? `<p class="muted small center">On the way to ${esc(intended.name)} you spotted a half-buried Vault-Tec door.</p>` : ""}
+      <p>${esc(vault.desc)}</p>
+      <p class="muted small">Vaults are shelters: no hostiles, no radiation. Rest, decontaminate and search the rooms for supplies. It's permanently on your map, so you can come back any time.</p>`,
+    buttons: [{ label: "ENTER THE VAULT", cls: "btn-primary" }]
+  });
+}
+
+/* Each loot source rolls this once (enemy loot, scavenging, Overseer's Office) */
+function maybeVaultMapDrop() {
+  return !hasVaultMap() && chance(VAULT_MAP_CHANCE);
+}
+
+function announceVaultMap() {
+  log("LEGENDARY FIND: The Vault-Tec Vault Map! Every vault is now marked on your map.", "event");
+  toast("★ LEGENDARY: The Vault-Tec Vault Map", "event");
+  Sound.play("levelup");
+  showModal({
+    title: "★ LEGENDARY FIND ★",
+    body: `<p class="center"><strong class="big rarity-legendary">The Vault-Tec Vault Map</strong></p>
+      <p>${esc(ITEMS.vault_map.desc)}</p>
+      <p class="muted small">All ${LOCATIONS.filter((l) => l.vault).length} vaults now appear on your map. Travel to one to unlock it permanently.</p>`,
+    buttons: [{ label: "OPEN MAP", cls: "btn-primary", fn: () => { state.ui.tab = "map"; } }, { label: "CLOSE" }]
+  });
+}
+
+function showVaultMapModal() {
+  const rows = REGIONS.map((r) => {
+    const vs = LOCATIONS.filter((l) => l.vault && l.region === r);
+    const found = vs.filter((v) => isVaultFound(v.id)).length;
+    return `<div class="vm-region"><div class="vm-title">${esc(r)} <span class="muted">${found}/${vs.length}</span></div>
+      <div class="tag-row">${vs.map((v) => `<span class="tag ${isVaultFound(v.id) ? "tag-here" : "tag-muted"}">${isVaultFound(v.id) ? "✓ " : ""}${esc(v.name)}</span>`).join("")}</div></div>`;
+  }).join("");
+  showModal({
+    title: "VAULT-TEC VAULT MAP",
+    body: `<div class="vm-list">${rows}</div><p class="muted small">✓ = unlocked. The rest are marked on your map; travel there to unlock them.</p>`,
+    buttons: [{ label: "OPEN MAP", cls: "btn-primary", fn: () => { state.ui.tab = "map"; } }, { label: "CLOSE" }]
+  });
+}
+
+function searchRoom(roomId) {
+  const loc = currentLoc();
+  const room = VAULT_ROOMS.find((r) => r.id === roomId);
+  if (!loc.vault || !room) return;
+  if (!isVaultFound(loc.id)) discoverVault(loc);
+  if (roomReadyAt(loc.id, roomId) > Date.now()) return fail(`${room.name} was already searched. It restocks soon.`);
+  const p = P();
+  const n = rand(room.rolls[0], room.rolls[1]) + (hasPerk("scavenger") ? 1 : 0);
+  const found = [];
+  for (let i = 0; i < n; i++) {
+    const key = weightedPick(room.table);
+    const t = ITEMS[key].type;
+    const qty = ITEMS[key].material ? rand(1, 3) : 1;
+    const rarity = t === "weapon" || t === "armor" ? rollGearRarity(key) : undefined;
+    addItem(p.inventory, key, qty, rarity);
+    found.push(`${ITEMS[key].name}${rarity && rarity !== "Common" ? ` [${rarity}]` : ""}${qty > 1 ? ` ×${qty}` : ""}`);
+  }
+  if (room.caps) {
+    const c = rand(room.caps[0], room.caps[1]);
+    p.caps += c;
+    found.push(`${c} caps`);
+  }
+  state.vaults[loc.id].rooms[roomId] = Date.now();
+  log(`Searched ${room.name}: ${found.join(", ")}.`, "loot");
+  toast(`${room.name}: ${found.join(", ")}`, "good");
+  Sound.play("loot");
+  if (room.id === "overseer" && maybeVaultMapDrop()) {
+    addItem(p.inventory, "vault_map", 1, "Legendary");
+    announceVaultMap();
+  }
+}
+
+function vaultRest() {
+  if (!inVault()) return;
+  if (enemyActive()) return fail("Not now!");
+  const p = P();
+  p.hp = effMaxHp();
+  p.ap = maxAp();
+  party().forEach((a) => { a.hp = a.maxHp; });
+  log("You rest in a vault bunk. HP, AP and your party are fully restored.", "good");
+  toast("Rested in the vault", "good");
+  Sound.play("heal");
+}
+
+function vaultDecon() {
+  if (!inVault()) return;
+  const p = P();
+  if (p.rads <= 0) return fail("You're not irradiated.");
+  const r = p.rads;
+  p.rads = 0;
+  clampVitals();
+  log(`The decontamination shower removed ${r} rads.`, "good");
+  toast(`-${r} rads`, "good");
+  Sound.play("heal");
+}
+
 
 /* ---------------------------
    ITEMS
@@ -412,12 +554,13 @@ function itemSummary(key, rarity) {
     if (d.buff) parts.push(`${d.buff.secs}s BUFF`);
     return parts.join(" · ");
   }
+  if (d.type === "key") return "KEY ITEM";
   return d.material ? "MATERIAL" : d.breakdown ? "JUNK · SCRAPPABLE" : "JUNK";
 }
 
 function itemNameHtml(key, rarity, qty) {
   const d = ITEMS[key];
-  const cls = d.type === "weapon" || d.type === "armor" ? `rarity-${rarity.toLowerCase()}` : "";
+  const cls = d.type === "weapon" || d.type === "armor" || d.type === "key" ? `rarity-${rarity.toLowerCase()}` : "";
   return `<span class="${cls}">${esc(d.name)}</span>${qty > 1 ? ` <span class="qty">×${qty}</span>` : ""}`;
 }
 
@@ -623,7 +766,15 @@ function arriveAt(loc, { noEncounter = false } = {}) {
   state.local = rollLocal(loc);
   state.ui.mapRegion = loc.region;
   state.ui.mapSelected = loc.id;
+  state.visited[loc.id] = true;
   log(`Arrived at ${loc.name}, ${loc.region}.`, "travel");
+  if (loc.vault) {
+    discoverVault(loc);
+    feed("The vault door seals behind you. You're safe here.", "good");
+    if (state.local.vendor) log(`A merchant is trading in ${loc.name}.`);
+    if (state.local.allyKey) log(`${ALLIES[state.local.allyKey].name} is looking for work here.`);
+    return;
+  }
   if (loc.rads) {
     const got = addRads(loc.rads);
     log(`Background radiation: +${got} rads.`, "warn");
@@ -644,6 +795,7 @@ function travelTo(id) {
   const p = P();
   if (!loc || p.dead) return;
   if (loc.id === p.locationId) return fail("You're already here.");
+  if (!isKnown(loc)) return fail("You don't know where that is.");
   if (enemyActive()) return fail("You can't travel with a hostile in your face. Fight or flee!");
   const fare = loc.region !== currentLoc().region ? REGION_FARE : 0;
   if (p.caps < fare) return fail(`The caravan to ${loc.region} costs ${fare} caps.`);
@@ -652,7 +804,19 @@ function travelTo(id) {
     log(`Paid ${fare} caps caravan fare to ${loc.region}.`);
   }
   Sound.play("travel");
+  // Surface trips may turn up a hidden vault in the destination region instead.
+  if (!loc.vault) {
+    const hidden = hiddenVaultsIn(loc.region);
+    if (hidden.length && chance(vaultDiscoveryChance())) {
+      const vault = pick(hidden);
+      arriveAt(vault);
+      showVaultDiscovered(vault, loc);
+      return;
+    }
+  }
+  const firstTime = loc.vault && !isVaultFound(loc.id);
   arriveAt(loc);
+  if (firstTime) showVaultDiscovered(loc, null);
 }
 
 function maybeTriggerEvent(loc) {
@@ -742,6 +906,7 @@ function applyEvent(key, loc) {
 --------------------------- */
 function maybeSpawnEnemy(loc, onArrival) {
   const p = P();
+  if (loc.vault || !loc.enemies.length) return false;
   const bossOk = p.level >= 5 || loc.danger !== "Low";
   const isWV = loc.region === "West Virginia";
   if (bossOk && (isWV || loc.id === "vegas") && chance(1 / 20)) {
@@ -809,6 +974,7 @@ function randomEncounterCheck() {
   const p = P();
   if (p.dead || state.enemy || !$("modal").classList.contains("hidden")) return false;
   const loc = currentLoc();
+  if (loc.vault) return false;
   let c = { Low: 0.06, Medium: 0.1, High: 0.14 }[loc.danger];
   if (atCamp()) c *= Math.max(0, 1 - poweredCounts().turret * 0.2);
   if (!chance(c)) return false;
@@ -833,6 +999,7 @@ function rollLoot(e) {
     out.push({ key, qty: rand(min, max), rarity: t === "weapon" || t === "armor" ? rollGearRarity(key) : undefined });
   });
   if (chance(0.25)) out.push({ key: "stimpak", qty: 1 });
+  if (maybeVaultMapDrop()) out.push({ key: "vault_map", qty: 1, rarity: "Legendary" });
   if (e.legendary || (e.boss && chance(0.5))) {
     const cap = 80 + P().level * 40;
     const pool = Object.keys(ITEMS).filter((k) => (ITEMS[k].type === "weapon" || ITEMS[k].type === "armor") && ITEMS[k].value <= cap);
@@ -960,8 +1127,10 @@ function lootEnemy() {
     feed("Nothing left to loot.", "muted");
   } else {
     e.loot.forEach((l) => {
+      if (l.key === "vault_map" && hasVaultMap()) return;
       addItem(P().inventory, l.key, l.qty, l.rarity);
-      const rTag = l.rarity && l.rarity !== "Common" && (ITEMS[l.key].type === "weapon" || ITEMS[l.key].type === "armor") ? ` [${l.rarity}]` : "";
+      if (l.key === "vault_map") announceVaultMap();
+      const rTag = l.rarity && l.rarity !== "Common" && ["weapon", "armor", "key"].includes(ITEMS[l.key].type) ? ` [${l.rarity}]` : "";
       log(`Looted ${ITEMS[l.key].name}${rTag}${l.qty > 1 ? ` ×${l.qty}` : ""}.`, "loot");
     });
     feed("You loot the remains.", "good");
@@ -996,6 +1165,7 @@ function flee() {
 function hunt() {
   const p = P();
   if (p.dead || state.enemy) return;
+  if (inVault()) return fail("The vault is sealed tight. Nothing to fight in here.");
   if (p.ap < HUNT_AP) return fail(`Searching for trouble needs ${HUNT_AP} AP.`);
   p.ap -= HUNT_AP;
   spawnEnemy(pick(currentLoc().enemies), currentLoc());
@@ -1124,6 +1294,10 @@ function useItem(uid) {
     return;
   }
   if (d.type === "junk") return fail("Junk can't be used. Scrap it, sell it, or craft with it.");
+  if (d.type === "key") {
+    if (inst.key === "vault_map") showVaultMapModal();
+    return;
+  }
 
   // consumable
   const onlyHeals = d.heal && !d.ap && !d.radHeal && !d.buff;
@@ -1165,6 +1339,7 @@ function dropItem(uid) {
   const inst = findInv(uid);
   if (!inst) return;
   if (inst.equipped) return fail("Unequip the item before dropping it.");
+  if (def(inst).type === "key") return fail("You can't drop a key item.");
   removeFromStack(P().inventory, inst, 1);
   if (!findInv(uid)) state.ui.selectedUid = null;
   log(`Dropped ${def(inst).name}.`);
@@ -1241,6 +1416,7 @@ function sellItem(uid) {
   const inst = findInv(uid);
   if (!inst || !state.local || !state.local.vendor) return;
   if (inst.equipped) return fail("Unequip the item before selling it.");
+  if (def(inst).type === "key") return fail("This isn't for sale.");
   const price = sellPrice(inst);
   P().caps += price;
   removeFromStack(P().inventory, inst, 1);
@@ -1258,6 +1434,7 @@ function scavenge() {
   const loc = currentLoc();
   if (p.dead) return;
   if (enemyActive()) return fail("Deal with the hostile first.");
+  if (loc.vault) return fail("Search the vault's rooms instead.");
   if (L.scavenges >= SCAVENGE_LIMIT) return fail("This area has been picked clean. Try somewhere else.");
   if (p.ap < SCAVENGE_AP) return fail(`Scavenging needs ${SCAVENGE_AP} AP.`);
   p.ap -= SCAVENGE_AP;
@@ -1273,6 +1450,10 @@ function scavenge() {
   log(`Scavenged: ${yieldText(got)}.`, "loot");
   toast(`Found ${yieldText(got)}`, "good");
   Sound.play("loot");
+  if (maybeVaultMapDrop()) {
+    addItem(p.inventory, "vault_map", 1, "Legendary");
+    announceVaultMap();
+  }
   if (loc.rads) addRads(Math.ceil(loc.rads / 2));
   const ambush = { Low: 0.08, Medium: 0.15, High: 0.25 }[loc.danger];
   if (chance(ambush)) {
@@ -1823,7 +2004,7 @@ $("import-input").addEventListener("change", (e) => {
 function normalizeState(saved) {
   const base = createBaseState();
   state = base;
-  ["player", "events", "camp", "settings", "ui"].forEach((k) => {
+  ["player", "events", "camp", "settings", "ui", "vaults", "visited"].forEach((k) => {
     if (saved[k] && typeof saved[k] === "object") Object.assign(base[k], saved[k]);
   });
   base.player.special = { ...createBaseState().player.special, ...(saved.player && saved.player.special) };  base.nextUid = saved.nextUid || 1;
@@ -1837,6 +2018,10 @@ function normalizeState(saved) {
   if (base.camp.wanderer && !ALLIES[base.camp.wanderer]) base.camp.wanderer = null;
   if (base.camp.deployed && !LOC[base.camp.locationId]) base.camp.deployed = false;
   if (!LOC[p.locationId]) p.locationId = "vault";
+  base.vaults = Object.fromEntries(Object.entries(base.vaults || {}).filter(([id, v]) => LOC[id] && LOC[id].vault && v && typeof v === "object")
+    .map(([id, v]) => [id, { discoveredAt: v.discoveredAt || Date.now(), rooms: v.rooms && typeof v.rooms === "object" ? v.rooms : {} }]));
+  markStartingKnowledge(base);
+  if (!MAP_ZOOMS.includes(base.ui.mapZoom)) base.ui.mapZoom = 1;
   if (!THEMES.includes(base.settings.theme)) base.settings.theme = "green";
   // Only one equipped item per slot
   ["weapon", "armor"].forEach((type) => {
@@ -1852,6 +2037,15 @@ function normalizeState(saved) {
   if (!REGIONS.includes(base.ui.mapRegion)) base.ui.mapRegion = LOC[p.locationId].region;
   clampVitals();
   return base;
+}
+
+/* Older saves: where you are (and your C.A.M.P.) count as visited/discovered */
+function markStartingKnowledge(s) {
+  [s.player.locationId, s.camp.deployed ? s.camp.locationId : null].forEach((id) => {
+    if (!id || !LOC[id]) return;
+    s.visited[id] = true;
+    if (LOC[id].vault && !s.vaults[id]) s.vaults[id] = { discoveredAt: Date.now(), rooms: {} };
+  });
 }
 
 /* Pre-v2 saves stored items/allies by display name and the location by name */
@@ -1902,6 +2096,7 @@ function migrateLegacySave(old) {
   s.ui.mapRegion = LOC[p.locationId].region;
   s.ui.mapSelected = p.locationId;
   s.local = rollLocal(LOC[p.locationId]);
+  markStartingKnowledge(s);
   clampVitals();
   return s;
 }
@@ -2026,18 +2221,19 @@ function renderStatus() {
 
       <section class="panel">
         <h2 class="panel-title">CURRENT LOCATION</h2>
-        <div class="loc-head"><span class="loc-name">${esc(loc.name)}</span>${dangerTag(loc.danger)}</div>
-        <p class="muted small">${esc(loc.region)}${loc.rads ? ` · ☢ +${loc.rads} rads on arrival` : ""}${loc.nocamp ? " · No C.A.M.P.s allowed" : ""}</p>
+        <div class="loc-head"><span class="loc-name">${loc.vault ? "⛬ " : ""}${esc(loc.name)}</span>${loc.vault ? '<span class="tag tag-vault">VAULT · SHELTER</span>' : dangerTag(loc.danger)}</div>
+        <p class="muted small">${esc(loc.region)}${loc.rads && !loc.vault ? ` · ☢ +${loc.rads} rads on arrival` : ""}${loc.nocamp && !loc.vault ? " · No C.A.M.P.s allowed" : ""}</p>
         <p class="desc">${esc(loc.desc)}</p>
         ${L.event ? `<p class="event-line"><strong>${esc(L.event.name)}</strong> — ${esc(L.event.text)}</p>` : ""}
+        ${loc.vault ? vaultPanelHtml(loc) : ""}
         <div class="btn-row">
-          ${btn(`SCAVENGE <span class="muted">(${SCAVENGE_AP} AP)</span>`, "scavenge", null, { disabled: busy || scavLeft <= 0 || p.ap < SCAVENGE_AP })}
+          ${loc.vault ? "" : btn(`SCAVENGE <span class="muted">(${SCAVENGE_AP} AP)</span>`, "scavenge", null, { disabled: busy || scavLeft <= 0 || p.ap < SCAVENGE_AP })}
           ${L.vendor ? btn("TRADE", "tab", "inventory") : ""}
           ${ally ? btn(`RECRUIT <span class="rarity-${ally.rarity.toLowerCase()}">${esc(ally.name)}</span> <span class="muted">(${allyCost(L.allyKey)}c)</span>`, "recruit") : ""}
           ${campBtn}
           ${enemyActive() ? btn("⚠ HOSTILE — FIGHT", "tab", "combat", { cls: "btn-danger" }) : ""}
         </div>
-        <p class="muted small">${scavLeft > 0 ? `${plural(scavLeft, "search")} left here` : "Picked clean"}${ally ? ` · ${esc(ally.name)} is looking for work` : ""}${L.vendor ? " · Vendor present" : ""}</p>
+        <p class="muted small">${loc.vault ? "Sealed from the surface: no hostiles, events or radiation." : scavLeft > 0 ? `${plural(scavLeft, "search")} left here` : "Picked clean"}${ally ? ` · ${esc(ally.name)} is looking for work` : ""}${L.vendor ? " · Vendor present" : ""}</p>
       </section>
 
       <section class="panel">
@@ -2078,56 +2274,174 @@ function renderStatus() {
     </div>`;
 }
 
+function vaultPanelHtml(loc) {
+  const p = P();
+  const now = Date.now();
+  const rooms = VAULT_ROOMS.map((r) => {
+    const readyAt = roomReadyAt(loc.id, r.id);
+    const ready = readyAt <= now;
+    return `<div class="room-row ${ready ? "" : "searched"}">
+      <span class="room-icon">${r.icon}</span>
+      <span class="room-info"><span>${esc(r.name)}</span><span class="muted small">${esc(r.desc)}</span></span>
+      ${ready ? btn("SEARCH", "searchRoom", r.id, { cls: "mini-btn btn-primary" }) : `<span class="muted small">restocks <span data-until="${readyAt}">…</span></span>`}
+    </div>`;
+  }).join("");
+  return `<div class="vault-box">
+    <div class="btn-row">
+      ${btn("REST IN BUNKS", "vaultRest", null, { disabled: p.hp >= effMaxHp() && p.ap >= maxAp() && party().every((a) => a.hp >= a.maxHp) })}
+      ${btn(`DECONTAMINATE${p.rads ? ` <span class="muted">(-${p.rads} rads)</span>` : ""}`, "vaultDecon", null, { disabled: p.rads <= 0 })}
+    </div>
+    <div class="room-list">${rooms}</div>
+  </div>`;
+}
+
 /* ---------------------------
    MAP TAB
 --------------------------- */
+let mapView = null; // { cx, cy } scroll center as fractions, kept across re-renders
+
+function captureMapView() {
+  const vp = $("map-viewport");
+  if (!vp || !vp.scrollWidth) return;
+  mapView = {
+    cx: (vp.scrollLeft + vp.clientWidth / 2) / vp.scrollWidth,
+    cy: (vp.scrollTop + vp.clientHeight / 2) / vp.scrollHeight
+  };
+}
+
+function applyMapView() {
+  const vp = $("map-viewport");
+  if (!vp || !mapView) return;
+  vp.scrollLeft = mapView.cx * vp.scrollWidth - vp.clientWidth / 2;
+  vp.scrollTop = mapView.cy * vp.scrollHeight - vp.clientHeight / 2;
+}
+
+function centerMapOn(loc) {
+  mapView = loc ? { cx: loc.x / 100, cy: loc.y / 100 } : { cx: 0.5, cy: 0.5 };
+}
+
+function setMapZoom(z, anchor) {
+  const zoom = clamp(z, MAP_ZOOMS[0], MAP_ZOOMS[MAP_ZOOMS.length - 1]);
+  if (zoom === state.ui.mapZoom) return;
+  captureMapView();
+  if (anchor && mapView) mapView = { cx: anchor.fx, cy: anchor.fy, ox: anchor.ox, oy: anchor.oy };
+  state.ui.mapZoom = zoom;
+  renderMap();
+  // keep the point under the cursor fixed while zooming with the wheel
+  const vp = $("map-viewport");
+  if (vp && anchor) {
+    vp.scrollLeft = anchor.fx * vp.scrollWidth - anchor.ox;
+    vp.scrollTop = anchor.fy * vp.scrollHeight - anchor.oy;
+    captureMapView();
+  }
+}
+
+function stepZoom(dir) {
+  const zs = MAP_ZOOMS;
+  const i = zs.indexOf(state.ui.mapZoom);
+  return zs[clamp((i < 0 ? 0 : i) + dir, 0, zs.length - 1)];
+}
+
+const mapDistance = (a, b) => Math.round(Math.hypot(a.x - b.x, a.y - b.y) * 0.6);
+
 function renderMap() {
   const p = P();
   const ui = state.ui;
   const region = ui.mapRegion;
-  const locs = LOCATIONS.filter((l) => l.region === region);
-  const sel = LOC[ui.mapSelected] && LOC[ui.mapSelected].region === region ? LOC[ui.mapSelected] : locs[0];
   const here = currentLoc();
+  const allInRegion = LOCATIONS.filter((l) => l.region === region);
+  const locs = allInRegion.filter(isKnown);
+  const sel = LOC[ui.mapSelected] && LOC[ui.mapSelected].region === region && isKnown(LOC[ui.mapSelected]) ? LOC[ui.mapSelected] : (locs.find((l) => l.id === here.id) || locs[0]);
+  ui.mapSelected = sel.id;
   const campLoc = state.camp.deployed ? state.camp.locationId : null;
+  const zoom = MAP_ZOOMS.includes(ui.mapZoom) ? ui.mapZoom : 1;
+  const mapOwned = hasVaultMap();
 
-  const chips = REGIONS.map((r) => btn(`${r}${r === here.region ? " ◉" : ""}`, "mapRegion", r, { cls: `chip ${r === region ? "active" : ""}` })).join("");
+  captureMapView();
+
+  const chips = REGIONS.map((r) => {
+    const found = LOCATIONS.filter((l) => l.vault && l.region === r && isVaultFound(l.id)).length;
+    return btn(`${r}${r === here.region ? " ◉" : ""}${found ? ` <span class="muted">⛬${found}</span>` : ""}`, "mapRegion", r, { cls: `chip ${r === region ? "active" : ""}` });
+  }).join("");
 
   const markers = locs.map((l) => {
-    const cls = ["map-marker", `danger-${l.danger.toLowerCase()}`];
+    const cls = ["map-marker", l.vault ? "is-vault" : `danger-${l.danger.toLowerCase()}`];
+    if (l.vault && !isVaultFound(l.id)) cls.push("is-located");
+    if (!l.vault && !state.visited[l.id]) cls.push("is-unvisited");
     if (l.id === p.locationId) cls.push("is-here");
     if (l.id === sel.id) cls.push("is-selected");
     if (l.id === campLoc) cls.push("is-camp");
     if (l.x > 60) cls.push("label-left");
-    return `<button class="${cls.join(" ")}" style="left:${l.x}%;top:${l.y}%" data-action="mapSelect" data-arg="${l.id}" title="${esc(l.name)}">
-      <span class="pin"></span><span class="mlabel">${l.id === campLoc ? "⌂ " : ""}${esc(l.name)}</span></button>`;
+    return `<button class="${cls.join(" ")}" style="left:${l.x}%;top:${l.y}%" data-action="mapSelect" data-arg="${l.id}" title="${esc(l.name)}${l.vault ? " (Vault)" : ` (${l.danger})`}">
+      <span class="pin">${l.vault ? "⛬" : ""}</span><span class="mlabel">${l.id === campLoc ? "⌂ " : ""}${esc(l.name)}</span></button>`;
   }).join("");
+
+  // route line from you to the selected location (same region only)
+  let route = "";
+  if (sel.id !== here.id && sel.region === here.region) {
+    route = `<svg class="map-route" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="${here.x}" y1="${here.y}" x2="${sel.x}" y2="${sel.y}" vector-effect="non-scaling-stroke"></line></svg>`;
+  }
 
   const features = [];
   if (sel.id === p.locationId) features.push('<span class="tag tag-here">YOU ARE HERE</span>');
+  if (sel.vault) {
+    features.push('<span class="tag tag-vault">⛬ VAULT · SHELTER</span>');
+    features.push(isVaultFound(sel.id) ? '<span class="tag tag-here">UNLOCKED</span>' : '<span class="tag tag-event">LOCATED VIA VAULT MAP</span>');
+    if (isVaultFound(sel.id)) {
+      const ready = VAULT_ROOMS.filter((r) => roomReadyAt(sel.id, r.id) <= Date.now()).length;
+      features.push(`<span class="tag">ROOMS READY ${ready}/${VAULT_ROOMS.length}</span>`);
+    }
+  } else {
+    features.push(state.visited[sel.id] ? '<span class="tag tag-muted">VISITED</span>' : '<span class="tag tag-event">UNEXPLORED</span>');
+  }
   if (sel.id === campLoc) features.push('<span class="tag tag-camp">YOUR C.A.M.P.</span>');
   if (sel.vendor) features.push('<span class="tag">VENDOR</span>');
   if (sel.ally && canRecruitKey(sel.ally)) features.push(`<span class="tag">RECRUIT: ${esc(ALLIES[sel.ally].name)}</span>`);
-  if (sel.rads) features.push(`<span class="tag tag-high">☢ ${sel.rads} RADS</span>`);
-  if (sel.nocamp) features.push('<span class="tag tag-muted">NO C.A.M.P.</span>');
-  if (sel.events && sel.events.length) features.push(`<span class="tag tag-muted">EVENTS: ${sel.events.map((e) => esc(EVENTS[e].name)).join(", ")}</span>`);
+  if (sel.rads && !sel.vault) features.push(`<span class="tag tag-high">☢ ${sel.rads} RADS</span>`);
+  if (sel.nocamp && !sel.vault) features.push('<span class="tag tag-muted">NO C.A.M.P.</span>');
+  if (!sel.vault && sel.events && sel.events.length) features.push(`<span class="tag tag-muted">EVENTS: ${sel.events.map((e) => esc(EVENTS[e].name)).join(", ")}</span>`);
   const fare = sel.region !== here.region ? REGION_FARE : 0;
-  const threats = [...new Set(sel.enemies)].map((k) => ENEMIES[k].name).join(", ");
+  const threats = sel.vault ? "None — sealed shelter" : [...new Set(sel.enemies)].map((k) => ENEMIES[k].name).join(", ");
+  const hiddenHere = hiddenVaultsIn(sel.region).length;
+  const distance = sel.region === here.region && sel.id !== here.id ? `<span class="muted">≈ ${mapDistance(here, sel)} mi away</span>` : "";
+
+  const surface = allInRegion.filter((l) => !l.vault);
+  const vaultsAll = allInRegion.filter((l) => l.vault);
+  const explored = surface.filter((l) => state.visited[l.id]).length;
+  const vaultsFound = vaultsAll.filter((l) => isVaultFound(l.id)).length;
+  const stats = `<div class="map-stats">
+      <span>EXPLORED ${explored}/${surface.length}</span>
+      <span>⛬ VAULTS ${vaultsFound}/${mapOwned ? vaultsAll.length : "?"}</span>
+      ${mapOwned ? '<span class="rarity-legendary">★ VAULT-TEC MAP ACTIVE</span>' : ""}
+    </div>`;
 
   const list = locs.map((l) => `<button class="list-row ${l.id === sel.id ? "selected" : ""}" data-action="mapSelect" data-arg="${l.id}">
-      <span>${l.id === p.locationId ? "◉ " : ""}${l.id === campLoc ? "⌂ " : ""}${esc(l.name)}</span>${dangerTag(l.danger)}</button>`).join("");
+      <span>${l.id === p.locationId ? "◉ " : ""}${l.id === campLoc ? "⌂ " : ""}${l.vault ? "⛬ " : ""}${esc(l.name)}${!l.vault && state.visited[l.id] ? ' <span class="muted">✓</span>' : ""}</span>${l.vault ? '<span class="tag tag-vault">VAULT</span>' : dangerTag(l.danger)}</button>`).join("");
 
   $("tab-map").innerHTML = `
     <div class="chip-row">${chips}</div>
     <div class="map-layout">
-      <div class="map-box">
-        <div class="map-grid"></div>
+      <div class="map-wrap">
+        <div class="map-box ${zoom > 1 ? "zoomed" : ""}" id="map-viewport">
+          <div class="map-canvas" style="width:${zoom * 100}%;height:${zoom * 100}%">
+            <div class="map-grid"></div>
+            ${route}
+            ${markers}
+          </div>
+        </div>
         <div class="map-region-label">${esc(region.toUpperCase())}</div>
-        ${markers}
-        <div class="map-legend"><span class="lg low">● LOW</span><span class="lg medium">● MED</span><span class="lg high">● HIGH</span><span>◉ YOU</span><span>⌂ C.A.M.P.</span></div>
+        <div class="map-zoom">
+          ${btn("+", "mapZoom", "in", { cls: "zoom-btn", disabled: zoom >= MAP_ZOOMS[MAP_ZOOMS.length - 1], title: "Zoom in (mouse wheel)" })}
+          <span class="zoom-level">${Math.round(zoom * 100)}%</span>
+          ${btn("−", "mapZoom", "out", { cls: "zoom-btn", disabled: zoom <= MAP_ZOOMS[0], title: "Zoom out" })}
+          ${btn("◎", "mapCenter", null, { cls: "zoom-btn", title: "Center on you" })}
+        </div>
+        <div class="map-legend"><span class="lg low">◆ LOW</span><span class="lg medium">◆ MED</span><span class="lg high">◆ HIGH</span><span class="lg vault">⛬ VAULT</span><span>◉ YOU</span><span>⌂ C.A.M.P.</span><span class="muted">DRAG · WHEEL · DOUBLE-CLICK TO TRAVEL</span></div>
       </div>
       <section class="panel map-detail">
-        <div class="loc-head"><span class="loc-name">${esc(sel.name)}</span>${dangerTag(sel.danger)}</div>
-        <p class="muted small">${esc(sel.region)}</p>
+        <div class="loc-head"><span class="loc-name">${sel.vault ? "⛬ " : ""}${esc(sel.name)}</span>${sel.vault ? "" : dangerTag(sel.danger)}</div>
+        <p class="muted small">${esc(sel.region)} ${distance ? `· ${distance}` : ""}</p>
         <p class="desc">${esc(sel.desc)}</p>
         <div class="tag-row">${features.join("")}</div>
         <p class="small"><span class="muted">Threats:</span> ${esc(threats)}</p>
@@ -2137,9 +2451,15 @@ function renderMap() {
         </div>
         ${enemyActive() ? '<p class="warn small">A hostile blocks your way. Fight or flee first.</p>' : ""}
         ${fare ? `<p class="muted small">Traveling to another region costs a ${REGION_FARE}-cap caravan fare.</p>` : ""}
+        ${!sel.vault && hiddenHere ? `<p class="small vault-hint">⛬ ${plural(hiddenHere, "hidden vault")} in ${esc(sel.region)}. Each trip here has a ${Math.round(vaultDiscoveryChance() * 100)}% chance to lead you to one instead.</p>` : ""}
+        ${stats}
       </section>
     </div>
-    <div class="loc-list">${list}</div>`;
+    <div class="loc-list">${list}</div>
+    <p class="muted small">Tip: ← → cycle locations · Enter travels · + / − zoom</p>`;
+
+  if (!mapView || zoom === 1) centerMapOn(zoom === 1 ? null : (sel || here));
+  applyMapView();
 }
 
 /* ---------------------------
@@ -2180,6 +2500,7 @@ function renderInventory() {
   if (sel) {
     const d = def(sel);
     const isGear = d.type === "weapon" || d.type === "armor";
+    const isKey = d.type === "key";
     const lines = [];
     let compare = "";
     if (d.type === "weapon") {
@@ -2207,13 +2528,14 @@ function renderInventory() {
     const actions = [];
     if (isGear) actions.push(btn(sel.equipped ? "UNEQUIP" : "EQUIP", "useItem", sel.uid, { cls: "btn-primary" }));
     if (d.type === "consumable") actions.push(btn("USE", "useItem", sel.uid, { cls: "btn-primary" }));
-    actions.push(btn("DROP", "dropItem", sel.uid, { disabled: sel.equipped }));
+    if (isKey) actions.push(btn(sel.key === "vault_map" ? "READ MAP" : "EXAMINE", "useItem", sel.uid, { cls: "btn-primary" }));
+    if (!isKey) actions.push(btn("DROP", "dropItem", sel.uid, { disabled: sel.equipped }));
     if (y) actions.push(btn("SCRAP", "scrapItem", sel.uid, { disabled: sel.equipped }));
-    if (state.local && state.local.vendor) actions.push(btn(`SELL <span class="muted">(${sellPrice(sel)}c)</span>`, "sellItem", sel.uid, { disabled: sel.equipped }));
+    if (state.local && state.local.vendor && !isKey) actions.push(btn(`SELL <span class="muted">(${sellPrice(sel)}c)</span>`, "sellItem", sel.uid, { disabled: sel.equipped }));
     if (atCamp()) actions.push(btn("STASH", "store", sel.uid, { disabled: sel.equipped }));
 
     detail = `
-      <div class="item-head">${itemNameHtml(sel.key, sel.rarity, 1)} ${isGear ? rarityTag(sel.rarity) : ""}${sel.equipped ? ' <span class="tag tag-here">EQUIPPED</span>' : ""}</div>
+      <div class="item-head">${itemNameHtml(sel.key, sel.rarity, 1)} ${isGear || isKey ? rarityTag(sel.rarity) : ""}${sel.equipped ? ' <span class="tag tag-here">EQUIPPED</span>' : ""}</div>
       <p class="muted small">${d.type.toUpperCase()}</p>
       <p class="desc">${esc(d.desc)}</p>
       <div class="kv">${lines.join("")}</div>
@@ -2283,8 +2605,8 @@ function renderCombat() {
         <section class="panel">
           <h2 class="panel-title">NO HOSTILES DETECTED</h2>
           <div class="radar"><div class="sweep"></div></div>
-          <p class="muted small center">Enemies may appear at any moment. The more dangerous the area, the more often.</p>
-          <div class="btn-row center">${btn(`SEARCH FOR TROUBLE <span class="muted">(${HUNT_AP} AP)</span>`, "hunt", null, { disabled: p.dead || p.ap < HUNT_AP })}</div>
+          <p class="muted small center">${inVault() ? "You're sheltered inside a vault. Nothing can reach you here." : "Enemies may appear at any moment. The more dangerous the area, the more often."}</p>
+          <div class="btn-row center">${btn(`SEARCH FOR TROUBLE <span class="muted">(${HUNT_AP} AP)</span>`, "hunt", null, { disabled: p.dead || p.ap < HUNT_AP || inVault() })}</div>
         </section>
         <section class="panel"><h2 class="panel-title">PARTY</h2>${partyHtml}</section>
       </div>
@@ -2625,6 +2947,8 @@ function slotChoices(fn, requireData) {
   return out;
 }
 
+let lastMapClick = { id: null, t: 0 };
+
 const ACTIONS = {
   tab: (t) => { state.ui.tab = t; Sound.play("nav"); },
   addStat,
@@ -2634,10 +2958,28 @@ const ACTIONS = {
   fastTravel: fastTravelCamp,
   mapRegion: (r) => {
     state.ui.mapRegion = r;
+    mapView = null;
     const here = currentLoc();
-    state.ui.mapSelected = here.region === r ? here.id : (LOCATIONS.find((l) => l.region === r) || here).id;
+    state.ui.mapSelected = here.region === r ? here.id : (LOCATIONS.find((l) => l.region === r && isKnown(l)) || here).id;
   },
-  mapSelect: (id) => { state.ui.mapSelected = id; },
+  mapSelect: (id) => {
+    // Clicking the already-selected marker again within 450ms = double-click travel
+    const now = Date.now();
+    const dbl = state.ui.mapSelected === id && lastMapClick.id === id && now - lastMapClick.t < 450;
+    lastMapClick = { id, t: now };
+    state.ui.mapSelected = id;
+    if (dbl && id !== P().locationId) travelTo(id);
+  },
+  mapZoom: (dir) => setMapZoom(stepZoom(dir === "in" ? 1 : -1)),
+  mapCenter: () => {
+    const here = currentLoc();
+    state.ui.mapRegion = here.region;
+    state.ui.mapSelected = here.id;
+    centerMapOn(here);
+  },
+  searchRoom,
+  vaultRest,
+  vaultDecon,
   invFilter: (f) => { state.ui.invFilter = f; state.ui.selectedUid = null; },
   selectItem: (uid) => { state.ui.selectedUid = Number(uid); },
   useItem: (uid) => useItem(Number(uid)),
@@ -2768,6 +3110,28 @@ document.addEventListener("keydown", (e) => {
     runAction("tab", tabs[Number(e.key) - 1]);
     return;
   }
+  if (state.ui.tab === "map") {
+    const locs = LOCATIONS.filter((l) => l.region === state.ui.mapRegion && isKnown(l));
+    const i = locs.findIndex((l) => l.id === state.ui.mapSelected);
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      const next = locs[(i + (e.key === "ArrowRight" ? 1 : -1) + locs.length) % locs.length];
+      if (next) {
+        state.ui.mapSelected = next.id;
+        if (state.ui.mapZoom > 1) centerMapOn(next);
+        Sound.play("hover");
+        render();
+      }
+    } else if (e.key === "Enter" && state.ui.mapSelected !== P().locationId) {
+      e.preventDefault();
+      runAction("travel", state.ui.mapSelected);
+    } else if (e.key === "+" || e.key === "=") {
+      runAction("mapZoom", "in");
+    } else if (e.key === "-" || e.key === "_") {
+      runAction("mapZoom", "out");
+    }
+    return;
+  }
   if (state.ui.tab !== "combat" || !state.enemy) return;
   const e2 = state.enemy;
   const k = e.key.toLowerCase();
@@ -2778,6 +3142,51 @@ document.addEventListener("keydown", (e) => {
     else if (k === "f") runAction("flee");
   } else if (k === "l") runAction("loot");
 });
+
+/* ---------------------------
+   MAP: drag to pan, wheel to zoom
+--------------------------- */
+let mapDrag = null;
+
+document.addEventListener("pointerdown", (e) => {
+  const vp = e.target.closest("#map-viewport");
+  if (!vp || !booted || e.button !== 0 || e.target.closest(".map-marker")) return;
+  mapDrag = { vp, x: e.clientX, y: e.clientY, sl: vp.scrollLeft, st: vp.scrollTop };
+  vp.classList.add("dragging");
+});
+
+document.addEventListener("pointermove", (e) => {
+  if (!mapDrag) return;
+  mapDrag.vp.scrollLeft = mapDrag.sl - (e.clientX - mapDrag.x);
+  mapDrag.vp.scrollTop = mapDrag.st - (e.clientY - mapDrag.y);
+});
+
+const endMapDrag = () => {
+  if (!mapDrag) return;
+  mapDrag.vp.classList.remove("dragging");
+  mapDrag = null;
+  captureMapView();
+};
+document.addEventListener("pointerup", endMapDrag);
+document.addEventListener("pointercancel", endMapDrag);
+
+document.addEventListener("wheel", (e) => {
+  const vp = e.target.closest("#map-viewport");
+  if (!vp || !booted) return;
+  const target = stepZoom(e.deltaY < 0 ? 1 : -1);
+  if (target === state.ui.mapZoom) return;
+  e.preventDefault();
+  const rect = vp.getBoundingClientRect();
+  const ox = e.clientX - rect.left;
+  const oy = e.clientY - rect.top;
+  setMapZoom(target, {
+    fx: (vp.scrollLeft + ox) / vp.scrollWidth,
+    fy: (vp.scrollTop + oy) / vp.scrollHeight,
+    ox,
+    oy
+  });
+  Sound.play("hover");
+}, { passive: false });
 
 /* ============================================================
    TICK / BOOT
@@ -2866,7 +3275,7 @@ function powerOn() {
   const box = $("boot-text");
   box.classList.remove("hidden");
   box.textContent = "";
-  typeLines(BOOT_LINES, box, () => setTimeout(openMenu, 350));
+  typeLines(BOOT_LINES, box, () => setTimeout(() => { if (!booted && !menuOpen) openMenu(); }, 350));
 }
 
 function typeLines(lines, box, done) {
