@@ -842,15 +842,45 @@ button.list-row:hover {
   margin-bottom: 14px;
 }
 
-.map-box {
+.map-wrap {
   position: relative;
   aspect-ratio: 4 / 3;
   border: 1px solid var(--c-line);
-  background:
-    radial-gradient(circle at 30% 40%, rgba(var(--c-rgb), 0.06), transparent 40%),
-    radial-gradient(circle at 70% 70%, rgba(var(--c-rgb), 0.05), transparent 35%),
-    rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.3);
   overflow: hidden;
+}
+
+.map-box {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  scrollbar-width: none;
+  touch-action: none;
+  cursor: default;
+}
+
+.map-box.zoomed {
+  overflow: scroll;
+  cursor: grab;
+}
+
+.map-box.dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.map-box::-webkit-scrollbar {
+  display: none;
+}
+
+.map-canvas {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at 30% 40%, rgba(var(--c-rgb), 0.07), transparent 40%),
+    radial-gradient(circle at 70% 70%, rgba(var(--c-rgb), 0.05), transparent 35%),
+    radial-gradient(circle at 80% 20%, rgba(var(--c-rgb), 0.04), transparent 30%);
 }
 
 .map-grid {
@@ -862,6 +892,28 @@ button.list-row:hover {
   background-size: 10% 10%;
 }
 
+.map-route {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.map-route line {
+  stroke: var(--c);
+  stroke-width: 2;
+  stroke-dasharray: 6 6;
+  opacity: 0.7;
+  animation: route-dash 1s linear infinite;
+  filter: drop-shadow(0 0 3px rgba(var(--c-rgb), 0.8));
+}
+
+@keyframes route-dash {
+  to { stroke-dashoffset: -12; }
+}
+
 .map-region-label {
   position: absolute;
   top: 8px;
@@ -870,23 +922,74 @@ button.list-row:hover {
   font-size: 20px;
   letter-spacing: 4px;
   color: var(--c-mute);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.map-zoom {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  z-index: 6;
+}
+
+.zoom-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  text-align: center;
+  font-size: 16px;
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.zoom-level {
+  font-size: 10px;
+  color: var(--c-dim);
+  background: rgba(0, 0, 0, 0.75);
+  padding: 1px 4px;
 }
 
 .map-legend {
   position: absolute;
-  bottom: 6px;
-  left: 8px;
-  right: 8px;
+  bottom: 0;
+  left: 0;
+  right: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 4px 10px;
+  padding: 5px 8px;
   font-size: 10px;
   color: var(--c-dim);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85), transparent);
+  pointer-events: none;
+  z-index: 6;
 }
 
 .lg.low { color: var(--c); }
 .lg.medium { color: var(--warn); }
 .lg.high { color: var(--danger); }
+.lg.vault { color: var(--r-rare); }
+
+.map-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dotted var(--c-line);
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.vault-hint {
+  color: var(--r-rare);
+  text-shadow: 0 0 5px rgba(79, 180, 255, 0.5);
+  margin-top: 6px;
+}
 
 .map-marker {
   position: absolute;
@@ -910,9 +1013,7 @@ button.list-row:hover {
   transform: translate(-50%, -50%);
 }
 
-.map-grid,
-.map-region-label,
-.map-legend {
+.map-grid {
   pointer-events: none;
 }
 
@@ -979,6 +1080,125 @@ button.list-row:hover {
 
 .map-detail {
   margin-bottom: 0;
+}
+
+/* ---- Vault markers ---- */
+.map-marker.is-vault {
+  color: var(--r-rare);
+}
+
+.map-marker.is-vault .pin {
+  width: 18px;
+  height: 18px;
+  transform: none;
+  border-radius: 50%;
+  border-width: 2px;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--r-rare);
+  text-shadow: none;
+  box-shadow: 0 0 6px rgba(79, 180, 255, 0.6);
+}
+
+.map-marker.is-vault.is-located .pin {
+  border-style: dashed;
+  opacity: 0.75;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.map-marker.is-vault.is-selected .pin {
+  background: rgba(79, 180, 255, 0.25);
+  box-shadow: 0 0 12px rgba(79, 180, 255, 0.9);
+}
+
+.map-marker.is-unvisited .pin {
+  opacity: 0.65;
+  background: transparent;
+}
+
+.map-marker.is-unvisited.is-selected .pin {
+  opacity: 1;
+}
+
+.tag-vault {
+  color: var(--r-rare);
+  border-color: rgba(79, 180, 255, 0.6);
+  text-shadow: 0 0 5px rgba(79, 180, 255, 0.5);
+}
+
+/* ---- Inside a vault ---- */
+.vault-box {
+  border: 1px solid rgba(79, 180, 255, 0.35);
+  background: rgba(79, 180, 255, 0.04);
+  padding: 4px 10px 8px;
+  margin: 8px 0;
+}
+
+.room-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.room-row {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px dotted var(--c-line);
+}
+
+.room-row:last-child {
+  border-bottom: none;
+}
+
+.room-row.searched {
+  opacity: 0.55;
+}
+
+.room-icon {
+  font-size: 16px;
+  text-align: center;
+  color: var(--r-rare);
+}
+
+.room-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vm-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.vm-region {
+  padding: 6px 0;
+  border-bottom: 1px dotted var(--c-line);
+}
+
+.vm-title {
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+
+.big {
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: normal;
+  letter-spacing: 2px;
+}
+
+.vault-door {
+  color: var(--r-rare);
+  text-shadow: 0 0 6px rgba(79, 180, 255, 0.6);
+  display: block;
+  width: fit-content;
+  margin: 0 auto 8px;
 }
 
 .loc-list {
