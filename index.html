@@ -84,10 +84,16 @@
     <div id="modal" class="hidden"></div>
 
     <div id="boot">
-      <pre id="boot-text"></pre>
-      <p id="boot-prompt" class="hidden">&gt; PRESS ANY KEY OR CLICK TO INITIALIZE<span class="cursor">_</span></p>
+      <div id="boot-press">
+        <div class="power-icon">⏻</div>
+        <p>&gt; PRESS ANY KEY OR CLICK TO POWER ON<span class="cursor">_</span></p>
+      </div>
+      <pre id="boot-text" class="hidden"></pre>
+      <div id="start-menu" class="hidden"></div>
     </div>
   </div>
+
+  <input type="file" id="import-input" accept=".json,application/json" class="hidden">
 
   <script src="data.js"></script>
   <script src="game.js"></script>

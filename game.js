@@ -69,12 +69,46 @@ function plural(n, word) {
 
 /* ---------------------------
    SOUND ENGINE
-   Synthesized with WebAudio so no missing files can break it.
-   click.wav is used when present.
+   Each game sound first looks for your own audio file in sounds/
+   (see sounds/README.md for the file names). Any file that's missing
+   falls back to a synthesized WebAudio tone, so nothing ever breaks.
 --------------------------- */
+const SOUND_EXTENSIONS = ["wav", "mp3", "ogg"];
+const SOUND_VOLUME = 0.45;
+
+/* game sound -> files to try, in order */
+const SOUND_FILES = {
+  click:   ["click"],
+  nav:     ["pipboy_nav", "click"],
+  attack:  ["attack"],
+  crit:    ["crit", "attack"],
+  miss:    ["miss"],
+  hurt:    ["enemy_hit"],
+  loot:    ["loot"],
+  travel:  ["travel"],
+  recruit: ["recruit"],
+  levelup: ["levelup"],
+  build:   ["build"],
+  error:   ["error"],
+  alert:   ["alert"],
+  boot:    ["pipboy_open"],
+  death:   ["death"],
+  heal:    ["heal", "stimpak"],
+  /* start-up menu */
+  power:   ["power_on", "pipboy_open"],
+  type:    ["terminal_type"],
+  hover:   ["menu_hover", "pipboy_nav", "click"],
+  select:  ["menu_select", "click"],
+  back:    ["menu_back", "click"],
+  start:   ["game_start", "pipboy_open"]
+};
+const AMBIENCE_FILE = "menu_ambience";
+const AMBIENCE_VOLUME = 0.3;
+const isMuted = () => (state ? state.settings.muted : prefs.muted);
+
 const Sound = {
   ctx: null,
-  clickSample: null,
+  samples: {}, // file base name -> loaded Audio element
 
   unlock() {
     if (!this.ctx) {
@@ -82,9 +116,93 @@ const Sound = {
       if (AC) {
         try { this.ctx = new AC(); } catch (e) { this.ctx = null; }
       }
-      try { this.clickSample = new Audio("sounds/click.wav"); } catch (e) { this.clickSample = null; }
+      this.loadSamples();
     }
     if (this.ctx && this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
+  },
+
+  ambience: null,
+
+  /* Looping menu background: your menu_ambience file, else a quiet synth hum */
+  startAmbience() {
+    this.stopAmbience();
+    if (isMuted()) return;
+    const s = this.samples[AMBIENCE_FILE];
+    if (s) {
+      const a = s.cloneNode();
+      a.loop = true;
+      a.volume = AMBIENCE_VOLUME;
+      a.play().catch(() => {});
+      this.ambience = { synth: false, stop: () => { a.pause(); a.src = ""; } };
+      return;
+    }
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.018, ctx.currentTime + 1.5);
+    gain.connect(ctx.destination);
+    const oscs = [55, 110.6, 164.4].map((f, i) => {
+      const o = ctx.createOscillator();
+      o.type = i === 0 ? "triangle" : "sine";
+      o.frequency.value = f;
+      const g = ctx.createGain();
+      g.gain.value = i === 0 ? 1 : 0.25;
+      o.connect(g).connect(gain);
+      o.start();
+      return o;
+    });
+    this.ambience = {
+      synth: true,
+      stop: () => {
+        const t = ctx.currentTime;
+        gain.gain.cancelScheduledValues(t);
+        gain.gain.setValueAtTime(gain.gain.value, t);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+        oscs.forEach((o) => o.stop(t + 0.45));
+      }
+    };
+  },
+
+  stopAmbience() {
+    if (this.ambience) this.ambience.stop();
+    this.ambience = null;
+  },
+
+  /* Ambience file may finish loading after the menu opens */
+  ambienceReady() {
+    if (menuOpen && this.ambience && this.ambience.synth) this.startAmbience();
+  },
+
+  loadSamples() {
+    const names = new Set([...Object.values(SOUND_FILES).flat(), AMBIENCE_FILE]);
+    names.forEach((name) => this.tryLoad(name, 0));
+  },
+
+  tryLoad(name, extIdx) {
+    if (extIdx >= SOUND_EXTENSIONS.length) return;
+    let a;
+    try { a = new Audio(); } catch (e) { return; }
+    a.preload = "auto";
+    a.addEventListener("canplaythrough", () => {
+      this.samples[name] = a;
+      if (name === AMBIENCE_FILE) this.ambienceReady();
+    }, { once: true });
+    a.addEventListener("error", () => this.tryLoad(name, extIdx + 1), { once: true });
+    a.src = `sounds/${name}.${SOUND_EXTENSIONS[extIdx]}`;
+    a.load();
+  },
+
+  playSample(name) {
+    for (const file of SOUND_FILES[name] || []) {
+      const s = this.samples[file];
+      if (!s) continue;
+      const a = s.cloneNode();
+      a.volume = SOUND_VOLUME;
+      a.play().catch(() => {});
+      return true;
+    }
+    return false;
   },
 
   tone(freq, dur, { type = "square", vol = 0.035, delay = 0, slide = null } = {}) {
@@ -119,16 +237,12 @@ const Sound = {
   },
 
   play(name) {
-    if (!this.ctx || (state && state.settings.muted)) return;
+    if (isMuted()) return;
+    if (this.playSample(name)) return;
+    if (!this.ctx) return;
     const seq = (notes, step, opts) => notes.forEach((f, i) => this.tone(f, step * 1.3, { ...opts, delay: i * step }));
     switch (name) {
-      case "click":
-        if (this.clickSample) {
-          const a = this.clickSample.cloneNode();
-          a.volume = 0.35;
-          a.play().catch(() => this.tone(1800, 0.03, { vol: 0.02 }));
-        } else this.tone(1800, 0.03, { vol: 0.02 });
-        break;
+      case "click": this.tone(1800, 0.03, { vol: 0.02 }); break;
       case "nav": this.tone(1100, 0.04, { vol: 0.025 }); this.tone(1500, 0.04, { vol: 0.025, delay: 0.04 }); break;
       case "attack": this.noise(0.12, 0.07); this.tone(200, 0.1, { type: "sawtooth", slide: 60 }); break;
       case "crit": this.noise(0.2, 0.09); this.tone(900, 0.2, { type: "sawtooth", slide: 150 }); break;
@@ -144,6 +258,12 @@ const Sound = {
       case "boot": seq([220, 330, 440, 660], 0.09, { type: "triangle", vol: 0.04 }); break;
       case "death": this.tone(320, 1.3, { type: "sawtooth", slide: 40, vol: 0.06 }); break;
       case "heal": seq([440, 554, 660], 0.07, { type: "sine", vol: 0.05 }); break;
+      case "power": this.noise(0.25, 0.04); this.tone(60, 0.9, { type: "sawtooth", slide: 240, vol: 0.05 }); this.tone(4000, 0.5, { type: "sine", vol: 0.01, delay: 0.3 }); break;
+      case "type": this.tone(2200 + Math.random() * 900, 0.012, { vol: 0.012 }); break;
+      case "hover": this.tone(1350, 0.025, { vol: 0.018 }); break;
+      case "select": this.tone(900, 0.05, { vol: 0.03 }); this.tone(1350, 0.07, { vol: 0.03, delay: 0.05 }); break;
+      case "back": this.tone(1100, 0.05, { vol: 0.025 }); this.tone(750, 0.07, { vol: 0.025, delay: 0.05 }); break;
+      case "start": seq([330, 440, 554, 880], 0.08, { type: "triangle", vol: 0.045 }); break;
     }
   }
 };
@@ -1524,25 +1644,82 @@ function tickCapsFrenzy() {
 /* ---------------------------
    SAVE / LOAD
 --------------------------- */
-function saveGame() {
-  if (!state) return;
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ ...state, feed: [] }));
-  } catch (e) {
-    console.error("Failed to save game:", e);
+/*
+  LocalStorage layout
+  - wastelandSave          : autosave (same key/format as before; written after
+                             every action and every 10s)
+  - wastelandSave_slot1..3 : manual save slots (same format + savedAt)
+  - wastelandPrefs         : device preferences (sound, theme) used by the menu
+*/
+const SLOT_COUNT = 3;
+const PREFS_KEY = "wastelandPrefs";
+const slotKey = (n) => `${SAVE_KEY}_slot${n}`;
+
+const Store = {
+  available: (() => {
+    try {
+      const k = "__wasteland_test__";
+      localStorage.setItem(k, "1");
+      localStorage.removeItem(k);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  })(),
+  get(key) {
+    if (!this.available) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      console.error(`Unreadable save data in ${key}:`, e);
+      return null;
+    }
+  },
+  set(key, value) {
+    if (!this.available) return false;
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (e) {
+      console.error(`Failed to write ${key}:`, e);
+      return false;
+    }
+  },
+  remove(key) {
+    if (!this.available) return;
+    try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
   }
+};
+
+const prefs = Object.assign({ muted: false, theme: "green" }, Store.get(PREFS_KEY) || {});
+function savePrefs() {
+  // In game, the running game's settings are the source of truth;
+  // on the start-up menu, prefs are edited directly.
+  if (state && booted) {
+    prefs.muted = state.settings.muted;
+    prefs.theme = state.settings.theme;
+  }
+  Store.set(PREFS_KEY, prefs);
 }
 
-function loadGame() {
-  let raw = null;
-  try { raw = localStorage.getItem(SAVE_KEY); } catch (e) { return false; }
-  if (!raw) return false;
+function snapshot() {
+  return { ...state, feed: [], savedAt: Date.now() };
+}
+
+function saveGame() {
+  if (!state) return;
+  Store.set(SAVE_KEY, snapshot());
+}
+
+/* Shared by autosave, slots and imported files */
+function loadFromObject(saved, label) {
+  if (!saved || typeof saved !== "object" || !saved.player) return false;
+  const previous = state;
   try {
-    const saved = JSON.parse(raw);
-    if (!saved || typeof saved !== "object") return false;
     if (saved.version === SAVE_VERSION) {
       state = normalizeState(saved);
-      log("Welcome back, wanderer.", "info");
+      log(`Welcome back, wanderer.${label ? ` (Loaded ${label})` : ""}`, "info");
     } else {
       state = migrateLegacySave(saved);
       log("Loaded saved game (converted to the new Pip-Boy format).", "warn");
@@ -1550,9 +1727,98 @@ function loadGame() {
     return true;
   } catch (e) {
     console.error("Save corrupted:", e);
+    state = previous;
     return false;
   }
 }
+
+function loadGame() {
+  return loadFromObject(Store.get(SAVE_KEY));
+}
+
+/* Short description of any save (v2 or legacy) for menus */
+function saveMeta(saved) {
+  if (!saved || !saved.player) return null;
+  const p = saved.player;
+  const loc = LOC[p.locationId] ? LOC[p.locationId].name : p.location || "Unknown";
+  return {
+    name: p.name || "Vault Wanderer",
+    level: p.level || 1,
+    location: loc,
+    caps: Math.floor(p.caps || 0),
+    dead: !!p.dead,
+    savedAt: saved.savedAt || null
+  };
+}
+
+function formatSavedAt(ts) {
+  if (!ts) return "unknown time";
+  const d = new Date(ts);
+  return `${d.toLocaleDateString()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function metaLine(meta) {
+  return `${esc(meta.name)} · LVL ${meta.level} · ${esc(meta.location)} · ${meta.caps}c${meta.dead ? " · DEAD" : ""}`;
+}
+
+function saveToSlot(n) {
+  if (!state) return;
+  if (Store.set(slotKey(n), snapshot())) {
+    log(`Game saved to slot ${n}.`, "good");
+    toast(`Saved to slot ${n}`, "good");
+    Sound.play("build");
+  } else {
+    fail("Couldn't save — browser storage is unavailable or full.");
+  }
+}
+
+function deleteSlot(n) {
+  Store.remove(slotKey(n));
+}
+
+/* Start a loaded/new game: settle camp time, autosave, enter play */
+function enterGame() {
+  catchUpCamp();
+  saveGame();
+  savePrefs();
+}
+
+function exportSave() {
+  if (!state) return;
+  const blob = new Blob([JSON.stringify(snapshot(), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const safe = P().name.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  a.href = url;
+  a.download = `wasteland-${safe}-lvl${P().level}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  log("Save exported to a file.", "good");
+}
+
+let importDone = null;
+function importSave(done) {
+  importDone = done;
+  const input = $("import-input");
+  input.value = "";
+  input.click();
+}
+
+$("import-input").addEventListener("change", (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data = null;
+    try { data = JSON.parse(reader.result); } catch (err) { data = null; }
+    const ok = !!saveMeta(data) && loadFromObject(data, "imported file");
+    if (importDone) importDone(ok);
+    importDone = null;
+  };
+  reader.readAsText(file);
+});
 
 function normalizeState(saved) {
   const base = createBaseState();
@@ -1560,8 +1826,7 @@ function normalizeState(saved) {
   ["player", "events", "camp", "settings", "ui"].forEach((k) => {
     if (saved[k] && typeof saved[k] === "object") Object.assign(base[k], saved[k]);
   });
-  base.player.special = { ...createBaseState().player.special, ...(saved.player && saved.player.special) };
-  base.nextUid = saved.nextUid || 1;
+  base.player.special = { ...createBaseState().player.special, ...(saved.player && saved.player.special) };  base.nextUid = saved.nextUid || 1;
   base.log = Array.isArray(saved.log) ? saved.log.slice(-MAX_LOG) : [];
   const p = base.player;
   p.inventory = (p.inventory || []).filter((i) => i && ITEMS[i.key] && i.quantity > 0);
@@ -1799,7 +2064,15 @@ function renderStatus() {
           ${btn(state.settings.muted ? "SOUND: OFF" : "SOUND: ON", "toggleSound")}
           ${THEMES.map((t) => btn(t.toUpperCase(), "theme", t, { cls: `chip swatch swatch-${t} ${state.settings.theme === t ? "active" : ""}` })).join("")}
         </div>
-        <div class="btn-row">${btn("NEW GAME", "newGame", null, { cls: "btn-danger" })}</div>
+        <h2 class="panel-title mt">SAVE DATA</h2>
+        <div class="btn-row">
+          ${btn("SAVE GAME", "saveMenu", null, { cls: "btn-primary", disabled: !Store.available })}
+          ${btn("LOAD GAME", "loadMenu", null, { disabled: !Store.available })}
+          ${btn("EXPORT", "exportSave", null, { title: "Download your save as a .json file" })}
+          ${btn("IMPORT", "importSave", null, { title: "Load a .json save file" })}
+        </div>
+        <p class="muted small">${Store.available ? `Autosaved to this browser after every action. ${SLOT_COUNT} manual slots are kept separately.` : '<span class="warn">Browser storage is blocked — use EXPORT to keep your progress.</span>'}</p>
+        <div class="btn-row">${btn("MAIN MENU", "mainMenu")}${btn("NEW GAME", "newGame", null, { cls: "btn-danger" })}</div>
         <p class="muted small">Keys: 1-7 switch tabs · In combat: A attack, V V.A.T.S., H heal, F flee, L loot</p>
       </section>
     </div>`;
@@ -2306,7 +2579,7 @@ function showModal({ title, body, buttons = [{ label: "OK" }], dismissible = tru
   m.innerHTML = `<div class="modal-box">
       <h2 class="modal-title">${title}</h2>
       <div class="modal-body">${body}</div>
-      <div class="btn-row center">${buttons.map((b, i) => `<button class="${b.cls || ""}" data-modal="${i}">${b.label}</button>`).join("")}</div>
+      <div class="btn-row center">${buttons.map((b, i) => `<button class="${b.cls || ""}" data-modal="${i}"${b.disabled ? " disabled" : ""}>${b.label}</button>`).join("")}</div>
     </div>`;
   m.classList.remove("hidden");
 }
@@ -2338,6 +2611,20 @@ function showDeathModal() {
 /* ============================================================
    INPUT
 ============================================================ */
+function slotChoices(fn, requireData) {
+  const out = [];
+  for (let n = 1; n <= SLOT_COUNT; n++) {
+    const m = saveMeta(Store.get(slotKey(n)));
+    out.push({
+      label: `SLOT ${n}<span class="slot-sub">${describeSave(m)}</span>`,
+      cls: "slot-btn",
+      disabled: requireData && !m,
+      fn: () => fn(n)
+    });
+  }
+  return out;
+}
+
 const ACTIONS = {
   tab: (t) => { state.ui.tab = t; Sound.play("nav"); },
   addStat,
@@ -2386,8 +2673,42 @@ const ACTIONS = {
   allySend: (uid) => allySend(Number(uid)),
   allyRecall: (uid) => allyRecall(Number(uid)),
   allyDismiss: (uid) => allyDismiss(Number(uid)),
-  toggleSound: () => { state.settings.muted = !state.settings.muted; },
-  theme: (t) => { if (THEMES.includes(t)) state.settings.theme = t; },
+  toggleSound: () => { state.settings.muted = !state.settings.muted; savePrefs(); },
+  theme: (t) => { if (THEMES.includes(t)) state.settings.theme = t; savePrefs(); },
+  saveMenu: () => showModal({
+    title: "SAVE GAME",
+    body: "<p>Choose a slot. Saving over a slot replaces it.</p>",
+    buttons: [
+      ...slotChoices((n) => saveToSlot(n), false),
+      { label: "CANCEL" }
+    ]
+  }),
+  loadMenu: () => showModal({
+    title: "LOAD GAME",
+    body: "<p>Load a save slot? Your current game is in the autosave until it's overwritten by the loaded game.</p>",
+    buttons: [
+      ...slotChoices((n) => {
+        if (loadFromObject(Store.get(slotKey(n)), `slot ${n}`)) {
+          applyPrefsToState();
+          enterGame();
+          toast(`Loaded slot ${n}`, "good");
+          if (P().dead) showDeathModal();
+        } else fail(`Slot ${n} couldn't be read.`);
+      }, true),
+      { label: "CANCEL" }
+    ]
+  }),
+  exportSave,
+  importSave: () => importSave((ok) => {
+    if (ok) {
+      applyPrefsToState();
+      enterGame();
+      toast("Save imported", "good");
+      render();
+      if (P().dead) showDeathModal();
+    } else fail("That file isn't a valid Wasteland RPG save.");
+  }),
+  mainMenu: returnToMenu,
   newGame: () => showModal({
     title: "START A NEW GAME?",
     body: "<p>This erases your current character, C.A.M.P. and progress. There's no undo.</p>",
@@ -2433,7 +2754,7 @@ document.addEventListener("click", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (!booted) {
-    finishBoot();
+    menuKey(e);
     return;
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -2506,49 +2827,301 @@ function tick() {
   if (tickCount % 10 === 0) saveGame();
 }
 
+/* ============================================================
+   START-UP MENU
+   Power-on screen -> typed boot sequence -> main menu.
+   All menu sounds go through Sound (your files in sounds/ or synth).
+============================================================ */
 const BOOT_LINES = [
   "ROBCO INDUSTRIES (TM) TERMLINK PROTOCOL",
   "PIP-UNIT 3000 BIOS v2.287",
   "> CHECKING MEMORY ........ 64K OK",
   "> LOADING S.P.E.C.I.A.L. MODULE ...... OK",
   "> C.A.M.P. DEVICE LINK ...... OK",
-  "> CALIBRATING GEIGER COUNTER ...... OK"
+  "> CALIBRATING GEIGER COUNTER ...... OK",
+  `> HOLOTAPE STORAGE ...... ${Store.available ? "OK" : "UNAVAILABLE"}`
 ];
 
-function startBoot() {
-  const box = $("boot-text");
-  let i = 0;
-  const step = () => {
-    if (booted) return;
-    if (i < BOOT_LINES.length) {
-      box.textContent += `${BOOT_LINES[i++]}\n`;
-      setTimeout(step, 180);
-    } else {
-      $("boot-prompt").classList.remove("hidden");
-    }
-  };
-  step();
-  $("boot").addEventListener("click", finishBoot);
+let powered = false;
+let typing = false;
+let menuOpen = false;
+let menuView = "main";
+let menuMsg = "";
+let menuConfirmDelete = null;
+let skipTyping = null;
+
+function showPowerScreen() {
+  $("boot").classList.remove("hidden", "fade");
+  $("boot-press").classList.remove("hidden");
+  $("boot-text").classList.add("hidden");
+  $("start-menu").classList.add("hidden");
 }
 
-function finishBoot() {
-  if (booted) return;
-  booted = true;
+function powerOn() {
+  if (powered) return;
+  powered = true;
   Sound.unlock();
+  Sound.play("power");
+  $("boot-press").classList.add("hidden");
+  const box = $("boot-text");
+  box.classList.remove("hidden");
+  box.textContent = "";
+  typeLines(BOOT_LINES, box, () => setTimeout(openMenu, 350));
+}
+
+function typeLines(lines, box, done) {
+  typing = true;
+  let li = 0;
+  let ci = 0;
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    typing = false;
+    skipTyping = null;
+    done();
+  };
+  skipTyping = () => {
+    box.textContent = `${lines.join("\n")}\n`;
+    finish();
+  };
+  const step = () => {
+    if (finished) return;
+    if (li >= lines.length) return finish();
+    const line = lines[li];
+    if (ci < line.length) {
+      box.textContent += line.slice(ci, ci + 2);
+      ci += 2;
+      // A sample file plays once per line; the synth ticks per keystroke.
+      if (!Sound.samples.terminal_type || ci === 2) Sound.play("type");
+      setTimeout(step, 14);
+    } else {
+      box.textContent += "\n";
+      li++;
+      ci = 0;
+      setTimeout(step, 110);
+    }
+  };
+  setTimeout(step, 450);
+}
+
+function openMenu() {
+  menuOpen = true;
+  menuView = "main";
+  menuMsg = "";
+  menuConfirmDelete = null;
+  $("boot").classList.remove("hidden", "fade");
+  $("boot-press").classList.add("hidden");
+  $("boot-text").classList.add("hidden");
+  $("start-menu").classList.remove("hidden");
+  renderMenu();
+  Sound.startAmbience();
+}
+
+function menuItem(id, label, { sub = "", disabled = false, cls = "" } = {}) {
+  return `<button class="menu-item ${cls}" data-menu="${id}"${disabled ? " disabled" : ""}>
+    <span class="menu-label">${label}</span>${sub ? `<span class="menu-sub">${sub}</span>` : ""}</button>`;
+}
+
+const describeSave = (meta) => (meta ? `${metaLine(meta)} · ${formatSavedAt(meta.savedAt)}` : "Empty");
+
+function renderMenu() {
+  const auto = saveMeta(Store.get(SAVE_KEY));
+  let title = "";
+  let info = "";
+  let items = "";
+
+  if (menuView === "main") {
+    items =
+      menuItem("continue", "CONTINUE", { sub: auto ? describeSave(auto) : "No saved game", disabled: !auto }) +
+      menuItem("new", "NEW GAME") +
+      menuItem("load", "LOAD GAME", { sub: "Save slots & import from file" }) +
+      menuItem("options", "OPTIONS");
+  } else if (menuView === "load") {
+    title = "LOAD GAME";
+    items = menuItem("load-auto", "AUTOSAVE", { sub: describeSave(auto), disabled: !auto });
+    for (let n = 1; n <= SLOT_COUNT; n++) {
+      const m = saveMeta(Store.get(slotKey(n)));
+      items += `<div class="menu-slot">${menuItem(`load-slot-${n}`, `SLOT ${n}`, { sub: describeSave(m), disabled: !m })}${
+        m ? `<button class="menu-del" data-menu="del-slot-${n}" title="Delete slot ${n}">${menuConfirmDelete === n ? "SURE?" : "✕"}</button>` : ""}</div>`;
+    }
+    items += menuItem("import", "IMPORT FROM FILE", { sub: "A .json save exported from this game" }) + menuItem("back", "BACK");
+  } else if (menuView === "options") {
+    title = "OPTIONS";
+    items =
+      menuItem("opt-sound", `SOUND: ${prefs.muted ? "OFF" : "ON"}`) +
+      menuItem("opt-theme", `COLOR: ${prefs.theme.toUpperCase()}`) +
+      menuItem("back", "BACK");
+  } else if (menuView === "confirmNew") {
+    title = "START A NEW GAME?";
+    info = "Your autosave will be replaced. Manual save slots are kept.";
+    items = menuItem("new-confirm", "YES, START OVER", { cls: "danger" }) + menuItem("back", "BACK");
+  }
+
+  $("start-menu").innerHTML = `
+    <div class="menu-logo">
+      <div class="menu-title">WASTELAND RPG</div>
+      <div class="menu-tagline">PIP-UNIT 3000 · ROBCO INDUSTRIES</div>
+    </div>
+    ${title ? `<div class="menu-heading">${title}</div>` : ""}
+    ${info ? `<p class="menu-info">${info}</p>` : ""}
+    <div class="menu-items">${items}</div>
+    ${menuMsg ? `<p class="menu-msg">${esc(menuMsg)}</p>` : ""}
+    ${Store.available ? "" : '<p class="menu-msg">Browser storage is blocked, so progress can\'t be saved. Use EXPORT in-game to keep a file.</p>'}
+    <p class="menu-hint">↑ ↓ SELECT · ENTER CONFIRM · ESC BACK</p>`;
+  const first = $("start-menu").querySelector(".menu-item:not(:disabled)");
+  if (first) first.focus({ preventScroll: true });
+}
+
+function setMenuView(view) {
+  menuView = view;
+  menuMsg = "";
+  menuConfirmDelete = null;
+  renderMenu();
+}
+
+function applyPrefsToState() {
+  state.settings.muted = prefs.muted;
+  state.settings.theme = prefs.theme;
+}
+
+function startGame() {
+  applyPrefsToState();
+  enterGame();
+  menuOpen = false;
+  booted = true;
+  Sound.stopAmbience();
+  Sound.play("start");
   $("boot").classList.add("fade");
-  setTimeout(() => $("boot").remove(), 450);
-  Sound.play("boot");
+  setTimeout(() => { if (!menuOpen) $("boot").classList.add("hidden"); }, 450);
   render();
   if (P().dead) showDeathModal();
 }
 
-function init() {
-  if (!loadGame()) newGame();
-  catchUpCamp();
+function startNewGame() {
+  newGame();
+  startGame();
+}
+
+function returnToMenu() {
   saveGame();
+  savePrefs();
+  closeModal();
+  booted = false;
+  openMenu();
+}
+
+function handleMenu(id) {
+  const back = id === "back";
+  Sound.play(back ? "back" : "select");
+  if (!id.startsWith("del-slot-")) menuConfirmDelete = null;
+
+  if (id === "continue" || id === "load-auto") {
+    if (loadGame()) startGame();
+    else { menuMsg = "The autosave couldn't be read."; renderMenu(); }
+  } else if (id === "new") {
+    if (saveMeta(Store.get(SAVE_KEY))) setMenuView("confirmNew");
+    else startNewGame();
+  } else if (id === "new-confirm") {
+    startNewGame();
+  } else if (id === "load") {
+    setMenuView("load");
+  } else if (id.startsWith("load-slot-")) {
+    const n = Number(id.slice(10));
+    if (loadFromObject(Store.get(slotKey(n)), `slot ${n}`)) startGame();
+    else { menuMsg = `Slot ${n} couldn't be read.`; renderMenu(); }
+  } else if (id.startsWith("del-slot-")) {
+    const n = Number(id.slice(9));
+    if (menuConfirmDelete === n) {
+      deleteSlot(n);
+      menuConfirmDelete = null;
+      menuMsg = `Slot ${n} deleted.`;
+    } else {
+      menuConfirmDelete = n;
+      menuMsg = "";
+    }
+    renderMenu();
+  } else if (id === "import") {
+    importSave((ok) => {
+      if (ok) startGame();
+      else { menuMsg = "That file isn't a valid Wasteland RPG save."; renderMenu(); }
+    });
+  } else if (id === "options") {
+    setMenuView("options");
+  } else if (id === "opt-sound") {
+    prefs.muted = !prefs.muted;
+    savePrefs();
+    if (prefs.muted) Sound.stopAmbience();
+    else Sound.startAmbience();
+    renderMenu();
+    $("start-menu").querySelector('[data-menu="opt-sound"]').focus();
+  } else if (id === "opt-theme") {
+    prefs.theme = THEMES[(THEMES.indexOf(prefs.theme) + 1) % THEMES.length];
+    document.documentElement.dataset.theme = prefs.theme;
+    savePrefs();
+    renderMenu();
+    $("start-menu").querySelector('[data-menu="opt-theme"]').focus();
+  } else if (back) {
+    setMenuView("main");
+  }
+}
+
+/* Keyboard while the start-up screens are showing */
+function menuKey(e) {
+  if (!powered) {
+    powerOn();
+    return;
+  }
+  if (typing) {
+    if (skipTyping) skipTyping();
+    return;
+  }
+  if (!menuOpen) return;
+  const buttons = [...$("start-menu").querySelectorAll("button:not(:disabled)")];
+  const idx = buttons.indexOf(document.activeElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "s" || e.key === "w") {
+    e.preventDefault();
+    const dir = e.key === "ArrowDown" || e.key === "s" ? 1 : -1;
+    const next = buttons[(idx + dir + buttons.length) % buttons.length];
+    if (next) next.focus();
+  } else if (e.key === "Escape" && menuView !== "main") {
+    handleMenu("back");
+  }
+}
+
+$("boot").addEventListener("click", (e) => {
+  if (!powered) return powerOn();
+  if (typing && skipTyping) return skipTyping();
+  const el = e.target.closest("[data-menu]");
+  if (el && !el.disabled) handleMenu(el.dataset.menu);
+});
+
+let lastHovered = null;
+$("start-menu").addEventListener("focusin", (e) => {
+  const el = e.target.closest("button");
+  if (el && el !== lastHovered) {
+    lastHovered = el;
+    Sound.play("hover");
+  }
+});
+$("start-menu").addEventListener("mouseover", (e) => {
+  const el = e.target.closest("button:not(:disabled)");
+  if (el && document.activeElement !== el) el.focus({ preventScroll: true });
+});
+
+function init() {
+  // First run with this version: carry sound/theme over from an existing autosave.
+  if (!Store.get(PREFS_KEY)) {
+    const auto = Store.get(SAVE_KEY);
+    if (auto && auto.settings) {
+      prefs.muted = !!auto.settings.muted;
+      if (THEMES.includes(auto.settings.theme)) prefs.theme = auto.settings.theme;
+    }
+    Store.set(PREFS_KEY, prefs);
+  }
+  document.documentElement.dataset.theme = prefs.theme;
   updateClock();
-  render();
-  startBoot();
+  showPowerScreen();
   setInterval(tick, 1000);
 }
 
